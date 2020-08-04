@@ -1,0 +1,10 @@
+{
+    "skill_title_file" : "combined_tags_v3c.json",
+    "tag_stopwords_file" : "tag_stpwords.txt",
+    "primary_category_file" : "primary_category.json",
+    "secondary_category_file" : "secondary_category.json",
+    "delivery_file" : "DeliveryMode.json",
+    "market_place_file" : "MarketPlaceName.json",
+    "input_activity" : "CatalogDataSample.csv"
+}
+
