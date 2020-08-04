@@ -1,0 +1,1873 @@
+#------------------------------------------------------------------------------#
+import cv2
+import os
+import numpy as np
+import tensorflow as tf
+from scipy.spatial import distance as dist
+import PIL
+from PIL.Image import Image, fromarray
+from math import sqrt, pi, cos, sin, atan2
+from collections import defaultdict
+import tarfile
+
+import EAST_lanms
+import EAST_model
+from EAST_icdar import restore_rectangle
+
+from object_detection_2.utils import visualization_utils_Arpan as vis_util
+
+import random as rng
+rng.seed(12345)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+tf.app.flags.DEFINE_string('input_image', '', '')
+tf.app.flags.DEFINE_string('checkpoint_path', 'east_chkpnt_resnet_v1_50', '')
+tf.app.flags.DEFINE_string('vmli', '15', '')
+
+FLAGS = tf.app.flags.FLAGS
+global text_detection_result
+text_detection_result = []
+PATH_TO_FROZEN_GRAPH = 'faster_rcnn_inception_resnet_v2_atrous_coco_weight.pb'
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def result_image_and_text_creation(output_image_name_2, input_image_2, res_file,
+        all_blocks):
+
+    corner_points = []
+    for i in range (0, len(all_blocks)):
+        temp_dict = {}
+        temp_dict['corner_point_1'] = (all_blocks[i][0], all_blocks[i][1])
+        temp_dict['corner_point_2'] = (all_blocks[i][2], all_blocks[i][1])
+        temp_dict['corner_point_3'] = (all_blocks[i][2], all_blocks[i][3])
+        temp_dict['corner_point_4'] = (all_blocks[i][0], all_blocks[i][3])
+        corner_points.append(temp_dict)
+    fd = open (res_file, "w")
+    for i in range (0, len(corner_points)):
+        fd.write(str(corner_points[i]) + "\n")
+    fd.close()
+
+    for lc in range (0, len(all_blocks)):
+        cv2.rectangle(
+                input_image_2,
+                (int(all_blocks[lc][0]), int(all_blocks[lc][1])),
+                (int(all_blocks[lc][2]), int(all_blocks[lc][3])),
+                (0,255,0),
+                2)
+    cv2.imwrite(output_image_name_2, input_image_2)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def remove_duplicate(duplicate):
+    final_list = []
+    for num in duplicate:
+        if num not in final_list:
+            final_list.append(num)
+    return final_list
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def triangle_area(x1, y1, x2, y2, x3, y3): 
+      
+    return abs((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def angle_cos(p0, p1, p2):
+    d1, d2 = (p0-p1).astype('float'), (p2-p1).astype('float')
+    return abs( np.dot(d1, d2) / np.sqrt( np.dot(d1, d1)*np.dot(d2, d2) ) )
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def find_squares(img):
+    img = cv2.GaussianBlur(img, (5, 5), 0)
+    squares = []
+    for gray in cv2.split(img):
+        for thrs in range(0, 255, 26):
+            if thrs == 0:
+                bin = cv2.Canny(gray, 0, 50, apertureSize=5)
+                bin = cv2.dilate(bin, None)
+            else:
+                _retval, bin = cv2.threshold(gray, thrs, 255, cv2.THRESH_BINARY)
+            contours, _hierarchy = cv2.findContours(bin, cv2.RETR_LIST, 
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                cnt_len = cv2.arcLength(cnt, True)
+                cnt = cv2.approxPolyDP(cnt, 0.02*cnt_len, True)
+                if (len(cnt) == 4 and cv2.contourArea(cnt) > 1000 and \
+                        cv2.isContourConvex(cnt)):
+                    cnt = cnt.reshape(-1, 2)
+                    max_cos = np.max([angle_cos( cnt[i], cnt[(i+1) % 4], 
+                                  cnt[(i+2) % 4] ) for i in range(4)])
+                    if (max_cos < 0.1):
+                        squares.append(cnt)
+    return squares
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def canny_edge_detector(input_image):
+    input_pixels = input_image.load()
+    width = input_image.width
+    height = input_image.height
+
+    # Transform the image to grayscale
+    grayscaled = compute_grayscale(input_pixels, width, height)
+
+    # Blur it to remove noise
+    blurred = compute_blur(grayscaled, width, height)
+
+    # Compute the gradient
+    gradient, direction = compute_gradient(blurred, width, height)
+
+    # Non-maximum suppression
+    filter_out_non_maximum(gradient, direction, width, height)
+
+    # Filter out some edges
+    keep = filter_strong_edges(gradient, width, height, 20, 25)
+
+    return keep
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def compute_grayscale(input_pixels, width, height):
+    grayscale = np.empty((width, height))
+    for x in range(width):
+        for y in range(height):
+            pixel = input_pixels[x, y]
+            grayscale[x, y] = (pixel[0] + pixel[1] + pixel[2]) / 3
+    return grayscale
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def compute_blur(input_pixels, width, height):
+    # Keep coordinate inside image
+    clip = lambda x, l, u: l if x < l else u if x > u else x
+
+    # Gaussian kernel
+    kernel = np.array([
+        [1 / 256,  4 / 256,  6 / 256,  4 / 256, 1 / 256],
+        [4 / 256, 16 / 256, 24 / 256, 16 / 256, 4 / 256],
+        [6 / 256, 24 / 256, 36 / 256, 24 / 256, 6 / 256],
+        [4 / 256, 16 / 256, 24 / 256, 16 / 256, 4 / 256],
+        [1 / 256,  4 / 256,  6 / 256,  4 / 256, 1 / 256]
+    ])
+
+    # Middle of the kernel
+    offset = len(kernel) // 2
+
+    # Compute the blurred image
+    blurred = np.empty((width, height))
+    for x in range(width):
+        for y in range(height):
+            acc = 0
+            for a in range(len(kernel)):
+                for b in range(len(kernel)):
+                    xn = clip(x + a - offset, 0, width - 1)
+                    yn = clip(y + b - offset, 0, height - 1)
+                    acc += input_pixels[xn, yn] * kernel[a, b]
+            blurred[x, y] = int(acc)
+    return blurred
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def compute_gradient(input_pixels, width, height):
+    gradient = np.zeros((width, height))
+    direction = np.zeros((width, height))
+    for x in range(width):
+        for y in range(height):
+            if 0 < x < width - 1 and 0 < y < height - 1:
+                magx = input_pixels[x + 1, y] - input_pixels[x - 1, y]
+                magy = input_pixels[x, y + 1] - input_pixels[x, y - 1]
+                gradient[x, y] = sqrt(magx**2 + magy**2)
+                direction[x, y] = atan2(magy, magx)
+    return gradient, direction
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def filter_out_non_maximum(gradient, direction, width, height):
+    for x in range(1, width - 1):
+        for y in range(1, height - 1):
+            angle = direction[x, y] if direction[x, y] >= 0 else \
+                            direction[x, y] + pi
+            rangle = round(angle / (pi / 4))
+            mag = gradient[x, y]
+            if ((rangle == 0 or rangle == 4) and \
+                    (gradient[x - 1, y] > mag or gradient[x + 1, y] > mag) 
+                or (rangle == 1 and \
+                        (gradient[x - 1, y - 1] > mag or \
+                         gradient[x + 1, y + 1] > mag))
+                or (rangle == 2 and \
+                        (gradient[x, y - 1] > mag or \
+                         gradient[x, y + 1] > mag))
+                or (rangle == 3 and \
+                        (gradient[x + 1, y - 1] > mag or \
+                         gradient[x - 1, y + 1] > mag))):
+                gradient[x, y] = 0
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def filter_strong_edges(gradient, width, height, low, high):
+    # Keep strong edges
+    keep = set()
+    for x in range(width):
+        for y in range(height):
+            if gradient[x, y] > high:
+                keep.add((x, y))
+
+    # Keep weak edges next to a pixel to keep
+    lastiter = keep
+    while lastiter:
+        newkeep = set()
+        for x, y in lastiter:
+            for a, b in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1),
+                         (1, 0), (1, 1)):
+                if gradient[x + a, y + b] > low and (x+a, y+b) not in keep:
+                    newkeep.add((x+a, y+b))
+        keep.update(newkeep)
+        lastiter = newkeep
+
+    return list(keep)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+class DeepLabModel(object):
+    """Class to load deeplab model and run inference."""
+
+    INPUT_TENSOR_NAME = 'ImageTensor:0'
+    OUTPUT_TENSOR_NAME = 'SemanticPredictions:0'
+    INPUT_SIZE = 513
+    FROZEN_GRAPH_NAME = 'frozen_inference_graph'
+
+    #------------------------------------------------------#
+    def __init__(self, tarball_path):
+        """Creates and loads pretrained deeplab model."""
+        self.graph = tf.Graph()
+
+        graph_def = None
+        # Extract frozen graph from tar archive.
+        tar_file = tarfile.open(tarball_path)
+        for tar_info in tar_file.getmembers():
+            if self.FROZEN_GRAPH_NAME in os.path.basename(tar_info.name):
+                file_handle = tar_file.extractfile(tar_info)
+                graph_def = tf.compat.v1.GraphDef.FromString(file_handle.read())
+                break
+
+        tar_file.close()
+
+        if graph_def is None:
+            raise RuntimeError('Cannot find inference graph in tar archive.')
+
+        with self.graph.as_default():
+            tf.import_graph_def(graph_def, name='')
+
+        self.sess = tf.compat.v1.Session(graph=self.graph)
+    #------------------------------------------------------#
+
+    #------------------------------------------------------#
+    def run(self, image):
+        """Runs inference on a single image.
+
+        Args:
+            image: A PIL.Image object, raw input image.
+
+        Returns:
+            resized_image: RGB image resized from original input image.
+            seg_map: Segmentation map of `resized_image`.
+        """
+        #print (image.size)
+        width, height = image.size
+        resize_ratio = 1.0 * self.INPUT_SIZE / max(width, height)
+        #print (resize_ratio)
+
+        target_size = (int(resize_ratio * width), int(resize_ratio * height))
+        #print (target_size)
+
+        resized_image = image.convert('RGB').resize(target_size, 
+                                                    PIL.Image.ANTIALIAS)
+
+        batch_seg_map = self.sess.run(
+            self.OUTPUT_TENSOR_NAME,
+            feed_dict={self.INPUT_TENSOR_NAME: [np.asarray(resized_image)]})
+        seg_map = batch_seg_map[0]
+
+        return seg_map
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def create_pascal_label_colormap():
+    """
+    Creates a label colormap used in PASCAL VOC segmentation benchmark.
+
+    Returns:
+        A Colormap for visualizing segmentation results.
+    """
+    colormap = np.zeros((256, 3), dtype=int)
+    ind = np.arange(256, dtype=int)
+
+    for shift in reversed(range(8)):
+        for channel in range(3):
+            colormap[:, channel] |= ((ind >> channel) & 1) << shift
+    ind >>= 3
+
+    return colormap
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def label_to_color_image(label):
+    """
+    Adds color defined by the dataset colormap to the label.
+    Args: A 2D array with integer type, storing the segmentation label.
+    Returns: A 2D array with floating type. The element of the array is the 
+        color indexed by the corresponding element in the input label to the 
+        PASCAL color map.
+    Raises: <ValueError> If label is not of rank 2 or its value is larger than 
+                         color map maximum entry.
+    """
+    if label.ndim != 2:
+        raise ValueError('Expect 2-D input label')
+
+    colormap = create_pascal_label_colormap()
+
+    if np.max(label) >= len(colormap):
+        raise ValueError('label value too large.')
+
+    return colormap[label]
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def thresh_callback(val):
+    global corner_points
+    threshold = val
+    canny_output = cv2.Canny(src_gray, threshold, threshold * 2)
+
+    #------------------------------------------------------#
+    def find_if_close(cnt1, cnt2):
+        row1, row2 = cnt1.shape[0], cnt2.shape[0]
+
+        for i in range(row1):
+            for j in range(row2):
+                dist = np.linalg.norm(cnt1[i] - cnt2[j])
+
+                if (abs(dist) < 20):
+                    return True
+                elif (i == row1 - 1) and (j == row2 - 1):
+                    return False
+    #------------------------------------------------------#
+
+    contours, _ = cv2.findContours(canny_output,
+                                   cv2.RETR_TREE,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+
+    LENGTH = len(contours)
+    #print ("LENGTH = ", LENGTH)
+
+    if (0 == LENGTH):
+        return None
+    else:
+        status = np.zeros((LENGTH, 1))
+
+        for i, cnt1 in enumerate(contours):
+            x = i
+            if (i != LENGTH - 1):
+                for j, cnt2 in enumerate(contours[i+1:]):
+                    x = x + 1
+                    dist = find_if_close(cnt1, cnt2)
+
+                    if (True == dist):
+                        val = min(status[i], status[x])
+                        status[x] = status[i] = val
+                    else:
+                        if (status[x] == status[i]):
+                            status[x] = i + 1
+
+        unified = []
+        maximum = int(status.max()) + 1
+
+        for i in range(maximum):
+            pos = np.where(status==i)[0]
+
+            if (pos.size != 0):
+                cont = np.vstack(contours[i] for i in pos)
+                hull = cv2.convexHull(cont)
+                unified.append(hull)
+
+        contours_poly = [None] * len(unified)
+        boundRect = [None] * len(unified)
+
+        for i, c in enumerate(unified):
+            contours_poly[i] = cv2.approxPolyDP(c, 3, True)
+            boundRect[i] = cv2.boundingRect(contours_poly[i])
+
+
+        drawing = np.zeros((canny_output.shape[0], canny_output.shape[1], 3),
+                       dtype=np.uint8)
+
+        corner_points = []
+        for i in range(len(unified)):
+            color = (rng.randint(0,256), rng.randint(0,256), rng.randint(0,256))
+
+            cv2.rectangle(drawing,
+                          (int(boundRect[i][0]),
+                              int(boundRect[i][1])),
+                          (int(boundRect[i][0] + boundRect[i][2]),
+                              int(boundRect[i][1] + boundRect[i][3])),
+                          color,
+                          2)
+
+            temp = (int(boundRect[i][0]),
+                    int(boundRect[i][1]),
+                    int(boundRect[i][0] + boundRect[i][2]),
+                    int(boundRect[i][1] + boundRect[i][3]))
+
+            corner_points.append(temp)
+
+        #print ("corner_points: ", corner_points)
+        #cv2.imwrite('contour_image.jpg', drawing)
+
+        ####-------------------------------------------------------------####
+
+        intersection_list = []
+
+        for i in range (0, len(corner_points)):
+            for j in range (0, len(corner_points)):
+                if (i != j):
+                    if not((corner_points[i][2] < corner_points[j][0]) or
+                           (corner_points[i][0] > corner_points[j][2]) or
+                           (corner_points[i][3] < corner_points[j][1]) or
+                           (corner_points[i][1] > corner_points[j][3])):
+                        intersection_list.append((corner_points[i],
+                                                  corner_points[j]))
+        #print ("intersection_list: ", intersection_list)
+
+        intersection_list_copy = intersection_list.copy()
+
+        for i in range (0, len(intersection_list)):
+            for j in range (0, len(intersection_list)):
+                if (i != j):
+                    if ((intersection_list[i][0] == intersection_list[j][1]) and
+                        (intersection_list[i][1] == intersection_list[j][0])):
+                        intersection_list_copy.remove(intersection_list[i])
+        #print (intersection_list_copy)
+
+        return intersection_list_copy
+#------------------------------------------------------------------------------#
+
+#----- Object Detection -------------------------------------------------------#
+def TensorFlow_object_detection_single_image(image, graph):
+  with graph.as_default():
+    with tf.compat.v1.Session() as sess:
+      # Get handles to input and output tensors
+      ops = tf.compat.v1.get_default_graph().get_operations()
+      all_tensor_names = {output.name for op in ops for output in op.outputs}
+      tensor_dict = {}
+      for key in [
+          'num_detections', 'detection_boxes', 'detection_scores',
+          'detection_classes', 'detection_masks'
+      ]:
+        tensor_name = key + ':0'
+        if tensor_name in all_tensor_names:
+          tensor_dict[key] = tf.compat.v1.get_default_graph().\
+                                 get_tensor_by_name(tensor_name)
+      if 'detection_masks' in tensor_dict:
+        # The following processing is only for single image
+        detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
+        detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
+        # Reframe is required to translate mask from box coordinates to 
+        # image coordinates and fit the image size.
+        real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
+        detection_boxes = tf.slice(detection_boxes, [0, 0], 
+                                   [real_num_detection, -1])
+        detection_masks = tf.slice(detection_masks, [0, 0, 0], 
+                                   [real_num_detection, -1, -1])
+        detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
+            detection_masks, detection_boxes, image.shape[1], image.shape[2])
+        detection_masks_reframed = tf.cast(
+            tf.greater(detection_masks_reframed, 0.5), tf.uint8)
+        # Follow the convention by adding back the batch dimension
+        tensor_dict['detection_masks'] = tf.expand_dims(
+            detection_masks_reframed, 0)
+      image_tensor = tf.compat.v1.get_default_graph().\
+                         get_tensor_by_name('image_tensor:0')
+
+      # Run inference
+      output_dict = sess.run(tensor_dict,
+                             feed_dict={image_tensor: image})
+
+      # all outputs are float32 numpy arrays, so convert types as appropriate
+      output_dict['num_detections'] = int(output_dict['num_detections'][0])
+      output_dict['detection_classes'] = output_dict[
+          'detection_classes'][0].astype(np.int64)
+      output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
+      output_dict['detection_scores'] = output_dict['detection_scores'][0]
+      if 'detection_masks' in output_dict:
+        output_dict['detection_masks'] = output_dict['detection_masks'][0]
+  return output_dict
+#------------------------------------------------------------------------------#  
+
+#------------------------------------------------------------------------------#
+def resize_image(im, max_side_len=2400):
+    h, w, _ = im.shape
+
+    resize_w = w
+    resize_h = h
+
+    # limit the max side
+    if max(resize_h, resize_w) > max_side_len:
+        ratio = float(max_side_len) / resize_h if resize_h > resize_w else \
+                    float(max_side_len) / resize_w
+    else:
+        ratio = 1.
+    resize_h = int(resize_h * ratio)
+    resize_w = int(resize_w * ratio)
+
+    resize_h = resize_h if resize_h % 32 == 0 else (resize_h // 32 - 1) * 32
+    resize_w = resize_w if resize_w % 32 == 0 else (resize_w // 32 - 1) * 32
+    im = cv2.resize(im, (int(resize_w), int(resize_h)))
+
+    ratio_h = resize_h / float(h)
+    ratio_w = resize_w / float(w)
+
+    return im, (ratio_h, ratio_w)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def text_detect(score_map, geo_map, score_map_thresh=0.8, box_thresh=0.1, 
+        nms_thres=0.2):
+    '''
+    restore text boxes from score map and geo map
+    :param score_map:
+    :param geo_map:
+    :param score_map_thresh: threshhold for score map
+    :param box_thresh: threshhold for boxes
+    :param nms_thres: threshold for nms
+    :return:
+    '''
+    if len(score_map.shape) == 4:
+        score_map = score_map[0, :, :, 0]
+        geo_map = geo_map[0, :, :, ]
+    # filter the score map
+    xy_text = np.argwhere(score_map > score_map_thresh)
+    # sort the text boxes via the y axis
+    xy_text = xy_text[np.argsort(xy_text[:, 0])]
+    # restore
+    text_box_restored = restore_rectangle(xy_text[:, ::-1]*4, 
+                                          geo_map[xy_text[:, 0], 
+                                          xy_text[:, 1], :]) # N*4*2
+    #print('{} text boxes before nms'.format(text_box_restored.shape[0]))
+    boxes = np.zeros((text_box_restored.shape[0], 9), dtype=np.float32)
+    boxes[:, :8] = text_box_restored.reshape((-1, 8))
+    boxes[:, 8] = score_map[xy_text[:, 0], xy_text[:, 1]]
+    boxes = EAST_lanms.merge_quadrangle_n9(boxes.astype('float32'), nms_thres)
+
+    if boxes.shape[0] == 0:
+        return None
+
+    # here we filter some low score boxes by the average score map, 
+    # this is different from the orginal paper
+    for i, box in enumerate(boxes):
+        mask = np.zeros_like(score_map, dtype=np.uint8)
+        cv2.fillPoly(mask, box[:8].reshape((-1, 4, 2)).astype(np.int32) // 4, 1)
+        boxes[i, 8] = cv2.mean(score_map, mask)[0]
+    boxes = boxes[boxes[:, 8] > box_thresh]
+
+    return boxes
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def sort_poly(p):
+    min_axis = np.argmin(np.sum(p, axis=1))
+    p = p[[min_axis, (min_axis+1)%4, (min_axis+2)%4, (min_axis+3)%4]]
+    if abs(p[0, 0] - p[1, 0]) > abs(p[0, 1] - p[1, 1]):
+        return p
+    else:
+        return p[[0, 3, 2, 1]]
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def initial_Allignment(file_content, input_image):
+    cropped_section_list = []
+
+    temp_3 = []
+    for i in range (0, len(file_content)):
+        temp_1 = file_content[i].split(",")
+        temp_2 = [
+                     [int (temp_1[0]), int (temp_1[1])],
+                     [int (temp_1[2]), int (temp_1[3])],
+                     [int (temp_1[4]), int (temp_1[5])],
+                     [int (temp_1[6]), int (temp_1[7])]
+                 ]
+        temp_3.append(temp_2)
+
+    temp_3_sorted = sorted(temp_3 , key=lambda k: [k[0][1], k[0][0]])
+
+    for i in range (0, len(temp_3_sorted)):
+        temp_4 = temp_3_sorted[i]
+        polygon = [temp_4]
+
+        # First find the minX minY maxX and maxY of the polygon
+        minX = input_image.shape[1]
+        maxX = -1
+        minY = input_image.shape[0]
+        maxY = -1
+
+        for point in polygon[0]:
+
+            x = point[0]
+            y = point[1]
+
+            if x < minX:
+                minX = x
+            if x > maxX:
+                maxX = x
+            if y < minY:
+                minY = y
+            if y > maxY:
+                maxY = y
+
+        cropedImage = np.zeros_like(input_image)
+        for y in range(0,input_image.shape[0]):
+            for x in range(0, input_image.shape[1]):
+
+                if x < minX or x > maxX or y < minY or y > maxY:
+                    continue
+
+                if cv2.pointPolygonTest(np.asarray(polygon), (x,y), False) >= 0:
+                    cropedImage[y, x, 0] = input_image[y, x, 0]
+                    cropedImage[y, x, 1] = input_image[y, x, 1]
+                    cropedImage[y, x, 2] = input_image[y, x, 2]
+
+        temp_dict = {}
+        temp_dict['image'] = cropedImage[minY:maxY,minX:maxX]
+        temp_dict['y1'] = minY
+        temp_dict['y2'] = maxY
+        temp_dict['x1'] = minX
+        temp_dict['x2'] = maxX
+        temp_dict['cent_Y'] = float(float (minY) + float (maxY)) / 2
+        temp_dict['cent_X'] = float(float (minX) + float (maxX)) / 2
+        temp_dict['flag'] = 0
+
+        cropped_section_list.append(temp_dict)
+
+    num_text_area = len(cropped_section_list)
+    #print ("Number of Text Area detected: ", num_text_area)
+
+    cropped_section_list_2 = []
+    temp_list = []
+
+    for i in range (0, len(cropped_section_list)):
+        if (0 == cropped_section_list[i]['flag']):
+            cropped_section_list[i]['flag'] = 1
+            temp_list.append(cropped_section_list[i])
+
+            for j in range (i+1, len(cropped_section_list)):
+                if (0 == cropped_section_list[j]['flag']):
+
+                    height_diff = float(abs(cropped_section_list[i]['cent_Y'] -
+                                    cropped_section_list[j]['cent_Y']))
+
+                    if (height_diff < 3):
+                        cropped_section_list[j]['flag'] = 1
+                        temp_list.append(cropped_section_list[j])
+
+            temp_list = sorted(temp_list, key = lambda x: (x['x1']))
+
+            for k in range (0, len(temp_list)):
+                cropped_section_list_2.append(temp_list[k])
+            temp_list.clear()
+
+    #print (len(cropped_section_list_2))
+
+    return cropped_section_list_2
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def Horizontal_Merging(input_image, input_list, consider_dist_diff):
+
+    for i in range (0, len(input_list)):
+        input_list[i]['flag'] = 0
+    
+    exception_count = 0    
+    output_list = []
+    for i in range (0, len(input_list)):
+        for j in range (i+1, len(input_list)):
+
+            if (0 == input_list[i]['flag']) and (0 == input_list[j]['flag']):
+
+                d1 = dist.euclidean((input_list[i]['cent_X'], 
+                                         input_list[i]['cent_Y']), 
+                                    (input_list[i]['x2'], input_list[i]['y2']))
+                                 
+                d2 = dist.euclidean((input_list[i]['cent_X'], 
+                                         input_list[i]['cent_Y']), 
+                                    (input_list[j]['x1'], input_list[j]['y1']))
+                                 
+                dist_diff = float(abs(d1-d2))
+                #print (dist_diff)
+        
+                height_diff = float(abs(input_list[i]['cent_Y'] - 
+                                            input_list[j]['cent_Y']))
+        
+                if ((dist_diff < consider_dist_diff) and (height_diff < 3)):
+                    bigger_crop = input_image[
+                                      input_list[i]['y1'] : input_list[j]['y2'],
+                                      input_list[i]['x1'] : input_list[j]['x2']]
+
+                    # check whether the cropped portion forms image            
+                    try:
+                        rgb_image = fromarray(bigger_crop)
+            
+                        temp_dict = {}
+                        temp_dict['image'] = bigger_crop
+                        temp_dict['y1'] = input_list[i]['y1']
+                        temp_dict['y2'] = input_list[j]['y2']
+                        temp_dict['x1'] = input_list[i]['x1']
+                        temp_dict['x2'] = input_list[j]['x2'] 
+                        temp_dict['cent_Y'] = float(float(temp_dict['y1']) 
+                                                  + float(temp_dict['y2'])) / 2
+                        temp_dict['cent_X'] = float(float(temp_dict['x1']) 
+                                                  + float(temp_dict['x2'])) / 2
+                        temp_dict['flag'] = 1                      
+        
+                        output_list.append(temp_dict)
+                        input_list[i]['flag'] = 1
+                        input_list[j]['flag'] = 1
+                    except ValueError:
+                        #print ("")
+                        exception_count = exception_count + 1
+                        
+                else:    
+                    input_list[i]['flag'] = 1
+                    output_list.append(input_list[i])
+        
+    for i in range (0, len(input_list)):
+        if (0 == input_list[i]['flag']):
+            input_list[i]['flag'] = 1
+            output_list.append(input_list[i])                
+                
+
+    return output_list             
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def horizontal_Allignment(cropped_section_list_2, input_image):
+    start_diff = 8
+
+    final_output_1 = []
+    merged_list = Horizontal_Merging(input_image, cropped_section_list_2,
+                                     start_diff)
+    #print (len(merged_list))
+
+    final_output_1.append(merged_list)
+    merging_loop_iterator = 30
+
+    for i in range (0, merging_loop_iterator):
+        merged_list_1 = Horizontal_Merging(input_image, merged_list, start_diff)
+        merged_list_2 = Horizontal_Merging(input_image, merged_list, 
+                                           start_diff + i)
+
+        if (len(merged_list_1) <= len(merged_list_2)):
+            final_output_1.pop(0)
+            final_output_1.append(merged_list_1)
+            merged_list = merged_list_1
+        else:
+            final_output_1.pop(0)
+            final_output_1.append(merged_list_2)
+            merged_list = merged_list_2
+
+    #print (len(final_output_1[0]))
+
+    final_output_1[0] = sorted(final_output_1[0], 
+                               key= lambda x: [x['y1'], x['x1']])
+
+    final_output_2 = []
+    merged_list = Horizontal_Merging(input_image, final_output_1[0], start_diff)
+    final_output_2.append(merged_list)
+
+    merging_loop_iterator = 30
+    for i in range (0, merging_loop_iterator):
+        merged_list_1 = Horizontal_Merging(input_image, merged_list, start_diff)
+        merged_list_2 = Horizontal_Merging(input_image, merged_list,
+                                           start_diff + i)
+
+        if (len(merged_list_1) <= len(merged_list_2)):
+            final_output_2.pop(0)
+            final_output_2.append(merged_list_1)
+            merged_list = merged_list_1
+        else:
+            final_output_2.pop(0)
+            final_output_2.append(merged_list_2)
+            merged_list = merged_list_2
+
+    #print (len(final_output_2[0]))
+
+    return final_output_2
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def Vertical_Merging(input_image, input_list, consider_vertical_diff):
+    
+    for i in range (0, len(input_list)):
+        input_list[i]['flag'] = 0
+    
+    exception_count = 0    
+    output_list = []
+    
+    for i in range (0, len(input_list)):
+        #print ("value of i", i)
+        
+        if (0 == input_list[i]['flag']):
+        
+            # looping with the rest of the list
+            for j in range (0, len(input_list)):
+                #print ("value of j", j)
+ 
+                if (0 == input_list[j]['flag']) and (i != j):
+
+                    h1 =  abs(input_list[i]['y1'] - input_list[i]['y2']) 
+                    h2 =  abs(input_list[j]['y1'] - input_list[j]['y2'])
+                
+                    ht_diff = abs(h1 - h2)  # checking for same font size
+                
+                    vertical_dist = dist.euclidean(
+                        (input_list[i]['x1'], input_list[i]['y2']),
+                        (input_list[j]['x1'], input_list[j]['y1']))
+                    #print (vertical_dist)
+                                
+                    if (abs(vertical_dist) < consider_vertical_diff):
+
+                        #------------------------------------------------------#
+                        if ((input_list[i]['x1'] <= input_list[j]['x1']) and 
+                            (input_list[i]['x2'] <= input_list[j]['x2'])):
+
+                            bigger_crop = input_image[
+                                input_list[i]['y1'] : input_list[j]['y2'],
+                                input_list[i]['x1'] : input_list[j]['x2']]
+                            
+                                                        
+                            # check whether the cropped portion forms image            
+                            try:
+                                rgb_image = fromarray(bigger_crop)
+            
+                                temp_dict = {}
+                                temp_dict['image'] = bigger_crop
+                                temp_dict['y1'] = input_list[i]['y1']
+                                temp_dict['y2'] = input_list[j]['y2']
+                                temp_dict['x1'] = input_list[i]['x1']
+                                temp_dict['x2'] = input_list[j]['x2'] 
+                                temp_dict['cent_Y'] = float(float(temp_dict['y1']) 
+                                                  + float(temp_dict['y2'])) / 2
+                                temp_dict['cent_X'] = float(float(temp_dict['x1']) 
+                                                  + float(temp_dict['x2'])) / 2
+                                temp_dict['flag'] = 1
+                        
+                                output_list.append(temp_dict)
+                                input_list[i]['flag'] = 1
+                                input_list[j]['flag'] = 1
+                                
+                                break
+                    
+                            except ValueError:
+                                #print ("Error at Vertical Merging - scene 1")
+                                exception_count = exception_count + 1    
+                        #------------------------------------------------------#
+                    
+                        #------------------------------------------------------#        
+                        if ((input_list[i]['x1'] >= input_list[j]['x1']) and 
+                            (input_list[i]['x2'] <= input_list[j]['x2'])):
+                        
+                            bigger_crop = input_image[
+                                input_list[i]['y1'] : input_list[j]['y2'],
+                                input_list[j]['x1'] : input_list[j]['x2']]
+                            
+                            # check whether the cropped portion forms image            
+                            try:
+                                rgb_image = fromarray(bigger_crop)
+            
+                                temp_dict = {}
+                                temp_dict['image'] = bigger_crop
+                                temp_dict['y1'] = input_list[i]['y1']
+                                temp_dict['y2'] = input_list[j]['y2']
+                                temp_dict['x1'] = input_list[j]['x1']
+                                temp_dict['x2'] = input_list[j]['x2'] 
+                                temp_dict['cent_Y'] = float(float(temp_dict['y1']) 
+                                                  + float(temp_dict['y2'])) / 2
+                                temp_dict['cent_X'] = float(float(temp_dict['x1']) 
+                                                  + float(temp_dict['x2'])) / 2
+                                temp_dict['flag'] = 1
+                        
+                                output_list.append(temp_dict)
+                                input_list[i]['flag'] = 1
+                                input_list[j]['flag'] = 1
+                                
+                                break
+                    
+                            except ValueError:
+                                #print ("Error at Vertical Merging - scene 2")
+                                exception_count = exception_count + 1    
+                        #------------------------------------------------------#
+                    
+                        #------------------------------------------------------#        
+                        if ((input_list[i]['x1'] <= input_list[j]['x1']) and 
+                            (input_list[i]['x2'] >= input_list[j]['x2'])):
+                        
+                            bigger_crop = input_image[
+                                input_list[i]['y1'] : input_list[j]['y2'],
+                                input_list[i]['x1'] : input_list[i]['x2']]
+                            
+                            # check whether the cropped portion forms image            
+                            try:
+                                rgb_image = fromarray(bigger_crop)
+            
+                                temp_dict = {}
+                                temp_dict['image'] = bigger_crop
+                                temp_dict['y1'] = input_list[i]['y1']
+                                temp_dict['y2'] = input_list[j]['y2']
+                                temp_dict['x1'] = input_list[i]['x1']
+                                temp_dict['x2'] = input_list[i]['x2'] 
+                                temp_dict['cent_Y'] = float(float(temp_dict['y1']) 
+                                                  + float(temp_dict['y2'])) / 2
+                                temp_dict['cent_X'] = float(float(temp_dict['x1']) 
+                                                  + float(temp_dict['x2'])) / 2
+                                temp_dict['flag'] = 1
+                        
+                                output_list.append(temp_dict)
+                                input_list[i]['flag'] = 1
+                                input_list[j]['flag'] = 1
+                                
+                                break
+                    
+                            except ValueError:
+                                #print ("Error at Vertical Merging - scene 3")
+                                exception_count = exception_count + 1    
+                        #------------------------------------------------------#
+                    
+                        #------------------------------------------------------#        
+                        if ((input_list[i]['x1'] >= input_list[j]['x1']) and 
+                            (input_list[i]['x2'] >= input_list[j]['x2'])):
+                        
+                            bigger_crop = input_image[
+                                input_list[i]['y1'] : input_list[j]['y2'],
+                                input_list[j]['x1'] : input_list[i]['x2']]                        
+
+                            # check whether the cropped portion forms image            
+                            try:
+                                rgb_image = fromarray(bigger_crop)
+            
+                                temp_dict = {}
+                                temp_dict['image'] = bigger_crop
+                                temp_dict['y1'] = input_list[i]['y1']
+                                temp_dict['y2'] = input_list[j]['y2']
+                                temp_dict['x1'] = input_list[j]['x1']
+                                temp_dict['x2'] = input_list[i]['x2'] 
+                                temp_dict['cent_Y'] = float(float(temp_dict['y1']) 
+                                                  + float(temp_dict['y2'])) / 2
+                                temp_dict['cent_X'] = float(float(temp_dict['x1']) 
+                                                  + float(temp_dict['x2'])) / 2
+                                temp_dict['flag'] = 1
+                        
+                                output_list.append(temp_dict)
+                                input_list[i]['flag'] = 1
+                                input_list[j]['flag'] = 1
+                                
+                                break
+                    
+                            except ValueError:
+                                #print ("Error at Vertical Merging - scene 4")
+                                exception_count = exception_count + 1
+                        #------------------------------------------------------#        
+                                        
+            ## for loop of j ends here
+        
+        
+        if (0 == input_list[i]['flag']):
+            input_list[i]['flag'] = 1
+            output_list.append(input_list[i])
+        
+                
+    return output_list             
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def vertical_Allignment(final_output_2, input_image):
+    vertical_diff = 20
+
+    final_output_3 = []
+    merged_list = Vertical_Merging(input_image, final_output_2[0], vertical_diff)
+    #print (len(merged_list))
+    final_output_3.append(merged_list)
+
+    vertical_merging_loop_iterator = int (FLAGS.vmli)
+    for i in range (0, vertical_merging_loop_iterator):
+        merged_list_1 = Vertical_Merging(input_image, merged_list, vertical_diff)
+        merged_list_2 = Vertical_Merging(input_image, merged_list, 
+                                         vertical_diff + i)
+        final_output_3.pop(0)
+    
+        if (len(merged_list_1) <= len(merged_list_2)):
+            final_output_3.append(merged_list_1)
+            merged_list = merged_list_1
+        else:
+            final_output_3.append(merged_list_2)
+            merged_list = merged_list_2
+    
+    #print (len(final_output_3[0]))
+
+    return final_output_3
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def find_if_close(cnt1, cnt2):
+    row1, row2 = cnt1.shape[0], cnt2.shape[0]
+
+    for i in range(row1):
+        for j in range(row2):
+            dist = np.linalg.norm(cnt1[i] - cnt2[j])
+
+            if (abs(dist) < 20):
+                return True
+            elif (i == row1 - 1) and (j == row2 - 1):
+                return False
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def image_processing_logic_1(img):
+    # graying of the input image
+    imgray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # blurring of the image
+    imggray_blurred = cv2.GaussianBlur(imgray, (5, 5), 0)
+
+    kernel = np.ones((5,5),np.uint8)
+    closing_img = cv2.morphologyEx(imggray_blurred, cv2.MORPH_CLOSE, kernel)
+    edged = cv2.Canny(closing_img, 4, 300)
+    return edged
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def image_processing_logic_2(im_fn):
+    img = cv2.imread(im_fn)
+
+    # Converting the image to grayscale.
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Smoothing without removing edges.
+    gray_filtered = cv2.bilateralFilter(gray, 7, 50, 50)
+
+    # Applying the canny filter
+    edged = cv2.Canny(gray_filtered, 60, 120)
+
+    return edged
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def image_area_detect_by_Contour(edged_image): 
+    # find contours in the edged image
+    contours, _ = cv2.findContours(edged_image, 
+                                   cv2.RETR_TREE,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+
+    LENGTH = len(contours)
+    status = np.zeros((LENGTH, 1))
+
+    for i, cnt1 in enumerate(contours):
+        x = i    
+        if (i != LENGTH - 1):
+            for j, cnt2 in enumerate(contours[i+1:]):
+                x = x + 1
+                dist = find_if_close(cnt1, cnt2)
+
+                if (True == dist):
+                    val = min(status[i], status[x])
+                    status[x] = status[i] = val
+                else:
+                    if (status[x] == status[i]):
+                        status[x] = i + 1
+
+    unified = []
+    maximum = int(status.max()) + 1
+
+    for i in range(maximum):
+        pos = np.where(status==i)[0]
+
+        if (pos.size != 0):
+            cont = np.vstack(contours[i] for i in pos)
+            hull = cv2.convexHull(cont)
+            unified.append(hull)
+
+    contours_poly = [None] * len(unified)
+    boundRect = [None] * len(unified)
+
+    for i, c in enumerate(unified):
+        contours_poly[i] = cv2.approxPolyDP(c, 3, True)
+        boundRect[i] = cv2.boundingRect(contours_poly[i])
+
+    corner_points = []
+    for i in range(len(unified)):
+        temp = (int(boundRect[i][0]), 
+                int(boundRect[i][1]), 
+                int(boundRect[i][0] + boundRect[i][2]), 
+                int(boundRect[i][1] + boundRect[i][3]))
+        corner_points.append(temp)
+
+    ##---- removing of overlapping areas, ----##
+    ##---- accepting with the bigger area section only ----##
+    corner_points_2 = []
+    temp_list_2 = []
+
+    for i in range (0, len(corner_points)):
+        for j in range (0, len(corner_points)):
+            if (i != j):
+                ## checking for intersection
+                if ((corner_points[i][0] < corner_points[j][2]) and
+                    (corner_points[i][2] > corner_points[j][0]) and
+                    (corner_points[i][1] < corner_points[j][3]) and
+                    (corner_points[i][3] > corner_points[j][1])):
+                    sq_area_1 = int(abs(corner_points[i][0] - 
+                                            corner_points[i][2]) *
+                                    abs(corner_points[i][1] - 
+                                            corner_points[i][3]))
+                    sq_area_2 = int(abs(corner_points[j][0] - 
+                                            corner_points[j][2]) *
+                                    abs(corner_points[j][1] - 
+                                            corner_points[j][3]))
+                    ## appending the bigger area
+                    if (sq_area_1 > sq_area_2):
+                        corner_points_2.append(corner_points[i])
+                    else:
+                        corner_points_2.append(corner_points[j])
+                    break
+
+                ## for non-intersection
+                temp_list_2.append(corner_points[j])
+
+                if (j == len(corner_points) - 1): ## non intersecting
+                    corner_points_2.append(corner_points[i]) 
+
+    temp_list_3 = remove_duplicate(temp_list_2)            
+
+    ## loop: 2
+    for i in range (0, len(temp_list_3)):
+        for j in range (0, len(corner_points)):
+            ## checking for intersection
+            if ((temp_list_3[i][0] < corner_points[j][2]) and
+                (temp_list_3[i][2] > corner_points[j][0]) and
+                (temp_list_3[i][1] < corner_points[j][3]) and
+                (temp_list_3[i][3] > corner_points[j][1])):
+                break
+
+            if (j == len(corner_points) - 1):
+                corner_points_2.append(temp_list_3[i])
+
+    temp_list_2.clear()
+    temp_list_3.clear()
+    corner_points_2b = []
+    for i in range (0, len(corner_points_2)):
+        temp_cordinates = list(corner_points_2[i])
+        corner_points_2b.append(temp_cordinates)
+    return corner_points_2b
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def main(argv=None):
+
+    with tf.compat.v1.get_default_graph().as_default():
+
+        input_images = tf.compat.v1.placeholder(tf.float32, 
+                                                shape=[None, None, None, 3], 
+                                                name='input_images')
+
+        global_step = tf.compat.v1.get_variable('global_step', 
+                                        [], 
+                                        initializer=tf.constant_initializer(0), 
+                                        trainable=False)
+
+        f_score, f_geometry = EAST_model.model(input_images, is_training=False)
+        variable_averages = tf.train.ExponentialMovingAverage(0.997, global_step)
+        saver = tf.compat.v1.train.Saver(variable_averages.variables_to_restore())
+
+        with tf.compat.v1.Session(
+            config=tf.compat.v1.ConfigProto(allow_soft_placement=True)) as sess:
+
+            print ("**********************************************************")
+            print ("Image Area Detection is starting..")
+            print ("This code has been developed by Arpan Ghose (GTO)")
+            print ("It may take some time. You can go for a coffee..")
+            print ("**********************************************************")
+
+            ####################################################################
+            ##---- Text Section ----------------------------------------------##
+            ckpt_state = tf.train.get_checkpoint_state(FLAGS.checkpoint_path)
+            model_path = os.path.join(FLAGS.checkpoint_path, 
+                             os.path.basename(ckpt_state.model_checkpoint_path))
+            #print('Restore from {}'.format(model_path))
+            saver.restore(sess, model_path)
+
+            im_fn = FLAGS.input_image
+            im = cv2.imread(im_fn)[:, :, ::-1]
+
+            im_resized, (ratio_h, ratio_w) = resize_image(im)
+
+            score, geometry = sess.run([f_score, f_geometry], 
+                                       feed_dict={input_images: [im_resized]})
+
+            boxes = text_detect(score_map=score, geo_map=geometry)
+            input_file_name, _ = os.path.splitext(im_fn)
+            res_file = "result_coordinates_" + input_file_name + ".txt"
+            if (os.path.isfile(res_file)):
+                os.remove(res_file)
+
+            if boxes is not None:
+                boxes = boxes[:, :8].reshape((-1, 4, 2))
+                boxes[:, :, 0] /= ratio_w
+                boxes[:, :, 1] /= ratio_h
+
+            # save to file
+            if boxes is not None:
+                with open(res_file, 'w') as f:
+                    for box in boxes:
+                        # to avoid submitting errors
+                        box = sort_poly(box.astype(np.int32))
+                        if (np.linalg.norm(box[0] - box[1]) < 5) or \
+                            (np.linalg.norm(box[3]-box[0]) < 5):
+                            continue
+                        f.write('{},{},{},{},{},{},{},{}\r\n'.format(
+                            box[0, 0], box[0, 1], 
+                            box[1, 0], box[1, 1], 
+                            box[2, 0], box[2, 1], 
+                            box[3, 0], box[3, 1],))
+
+                with open(res_file) as f:
+                    content = f.readlines()
+
+                file_content = [x.strip() for x in content]
+                #print ("Image Meta data count: ", len(file_content))
+                input_image = cv2.imread(im_fn)
+
+                cropped_section_list_2 = initial_Allignment(file_content,
+                                                            input_image)
+                final_output_2 = horizontal_Allignment(cropped_section_list_2,
+                                                       input_image)
+                final_output_3 = vertical_Allignment(final_output_2,
+                                                     input_image)
+               
+                text_block_list = final_output_3[0].copy()
+                fdes = open(res_file, 'r+')
+                fdes.truncate(0)
+                fdes.close()
+
+                for i in range (0, len(text_block_list)):
+                    temp = []
+                    temp.append(text_block_list[i]['x1'])
+                    temp.append(text_block_list[i]['y1'])
+                    temp.append(text_block_list[i]['x2'])
+                    temp.append(text_block_list[i]['y2'])
+                    text_detection_result.append(temp)
+                #print ("text_detection_result: ", text_detection_result)    
+            ##----------------------------------------------------------------##
+            ####################################################################
+
+            ####################################################################
+            ##---- Image Section ---------------------------------------------##
+            input_image_2 = cv2.imread(im_fn)
+            output_image_name_2 = "image_area_detect_" + input_file_name + ".jpg"
+            if(os.path.isfile(output_image_name_2)):
+                os.remove(output_image_name_2)
+            SAMPLE_IMAGE = im_fn    
+            ##----------------------------------------------------------------##            
+
+            ##----------------------------------------------------------------##
+            image_processing_logic_1_edged = image_processing_logic_1(
+                                                 input_image_2)
+            corner_points_3b = image_area_detect_by_Contour(
+                                                 image_processing_logic_1_edged)                                     
+            #print ("corner_points_3b: ", corner_points_3b)
+            #print ("corner_points_3b length: ", len(corner_points_3b))
+            ##----------------------------------------------------------------##
+            
+            ##----------------------------------------------------------------##
+            image_processing_logic_2_edged = image_processing_logic_2(im_fn)
+            corner_points_4b = image_area_detect_by_Contour(
+                                                 image_processing_logic_2_edged)
+            #print ("corner_points_4b: ", corner_points_4b)
+            #print ("corner_points_4b length: ", len(corner_points_4b))
+            ##----------------------------------------------------------------##
+
+            ##---- Semantic Segmentation -------------------------------------##
+            print("Semantic Segmentation is starting")
+            MODEL_NAME = 'deeplabv3_mnv2_pascal_train_aug_2018_01_29.tar.gz'
+            model_dir = "Segmentation_Models"
+
+            download_path = os.path.join(model_dir, MODEL_NAME)
+            MODEL = DeepLabModel(download_path)
+
+            original_im = PIL.Image.open(SAMPLE_IMAGE)
+            print('running Semantic Segmentation on image [%s]' %SAMPLE_IMAGE)
+            seg_map = MODEL.run(original_im)
+            seg_image = label_to_color_image(seg_map).astype(np.uint8)
+            #print (type(seg_image))
+
+            seg_image_2 = cv2.resize(seg_image, original_im.size)
+            #cv2.imwrite('segmentation_image.jpg', seg_image_2)
+
+            # Convert image to gray and blur it
+            global src_gray
+            src_gray = cv2.cvtColor(seg_image_2, cv2.COLOR_BGR2GRAY)
+            src_gray = cv2.blur(src_gray, (3,3))
+            #max_thresh = 255
+            thresh = 100 # initial threshold
+
+            intersect_list = thresh_callback(thresh)
+            #print ("intersect_list: ", intersect_list)
+
+            corp_area = []
+            if ((None != intersect_list) and (0 != len(intersect_list))):
+                for i in range (0, len(intersect_list)):
+                    temp_cordinates = []
+                    if (intersect_list[i][0][0] <= intersect_list[i][1][0]):
+                        temp_cordinates.append(intersect_list[i][0][0])
+                    else:
+                        temp_cordinates.append(intersect_list[i][1][0])
+
+                    if (intersect_list[i][0][1] <= intersect_list[i][1][1]):
+                        temp_cordinates.append(intersect_list[i][0][1])
+                    else:
+                        temp_cordinates.append(intersect_list[i][1][1])
+
+                    if (intersect_list[i][0][2] >= intersect_list[i][1][2]):
+                        temp_cordinates.append(intersect_list[i][0][2])
+                    else:
+                        temp_cordinates.append(intersect_list[i][1][2])
+
+                    if (intersect_list[i][0][3] >= intersect_list[i][1][3]):
+                        temp_cordinates.append(intersect_list[i][0][3])
+                    else:
+                        temp_cordinates.append(intersect_list[i][1][3])
+                    corp_area.append(temp_cordinates)
+
+            #print ("Segmentation Result: \n", corp_area)   
+            print ("Semantic Segmentation has been completed successfully\n")
+            ##----------------------------------------------------------------##
+
+            ####---- Object Detection --------------------------------------####
+            print("Object Detection is starting")
+
+            # Load a (frozen) Tensorflow model into memory.
+            detection_graph = tf.Graph()
+            with detection_graph.as_default():
+                od_graph_def = tf.compat.v1.GraphDef()
+                with tf.io.gfile.GFile(PATH_TO_FROZEN_GRAPH, 'rb') as fid:
+                    serialized_graph = fid.read()
+                    od_graph_def.ParseFromString(serialized_graph)
+                    tf.import_graph_def(od_graph_def, name='')
+
+            image = cv2.imread(SAMPLE_IMAGE)
+            # Expand dimensions since the model expects images to have 
+            # shape: [1, None, None, 3]
+            image_expanded = np.expand_dims(image, axis=0)
+            # Actual detection.
+            output_dict = TensorFlow_object_detection_single_image(
+                              image_expanded, 
+                              detection_graph)
+
+            coordinates_list = []
+            # populating the coordinates_list
+            vis_util.visualize_boxes_and_labels_on_image_array(
+                    image,
+                    coordinates_list,
+                    output_dict['detection_boxes'],
+                    output_dict['detection_classes'],
+                    output_dict['detection_scores'],
+                    instance_masks=output_dict.get('detection_masks'),
+                    use_normalized_coordinates=True,
+                    line_thickness=2)
+            #print ("Object Detection Result: \n", coordinates_list)
+            #--------------------------------------------------------------#
+
+            #--------------------------------------------------------------#
+            print ("Merging of Semantic Segmentation and Object Detection")
+            segment_and_detect_result = []
+
+            ## condition/1
+            if (0 != len(corp_area) and (0 != len(coordinates_list))):
+                temp_list_4 = []
+
+                ## loop: 1
+                for i in range (0, len(corp_area)):
+                    for j in range (0, len(coordinates_list)):
+
+                        ## checking for intersection
+                        if ((corp_area[i][0] < coordinates_list[j][2]) and
+                            (corp_area[i][2] > coordinates_list[j][0]) and
+                            (corp_area[i][1] < coordinates_list[j][3]) and
+                            (corp_area[i][3] > coordinates_list[j][1])):
+                            sq_area_1 = int(abs(corp_area[i][0] - 
+                                                    corp_area[i][2]) *
+                                            abs(corp_area[i][1] - 
+                                                    corp_area[i][3]))
+
+                            sq_area_2 = int(abs(coordinates_list[j][0] -
+                                                coordinates_list[j][2]) *
+                                            abs(coordinates_list[j][1] -
+                                                coordinates_list[j][3]))
+
+                            ## appending the bigger area
+                            if (sq_area_1 > sq_area_2):
+                                segment_and_detect_result.append(corp_area[i])
+                            else:
+                                segment_and_detect_result.\
+                                    append(coordinates_list[j])
+                            break
+
+                        ## for non-intersection
+                        temp_list_4.append(coordinates_list[j])
+
+                        if (j == len(coordinates_list) - 1): ## non intersecting
+                            segment_and_detect_result.append(corp_area[i])
+
+                temp_list_5 = remove_duplicate(temp_list_4)
+
+                ## loop: 2
+                for i in range (0, len(temp_list_5)):
+                    for j in range (0, len(corp_area)):
+
+                        ## checking for intersection
+                        if ((temp_list_5[i][0] < corp_area[j][2]) and
+                            (temp_list_5[i][2] > corp_area[j][0]) and
+                            (temp_list_5[i][1] < corp_area[j][3]) and
+                            (temp_list_5[i][3] > corp_area[j][1])):
+                            break
+
+                        if (j == len(corp_area)-1):
+                            segment_and_detect_result.append(temp_list_5[i])
+
+                temp_list_4.clear()
+                temp_list_5.clear()
+
+            ## condition/2
+            if (0 == len(corp_area) and (0 != len(coordinates_list))):
+                for i in range (0, len(coordinates_list)):
+                    segment_and_detect_result.append(coordinates_list[i])
+
+            ## legacy check ## condition/3
+            if (0 == len(corp_area) and (0 == len(coordinates_list))):
+                segment_and_detect_result = None
+
+            #print ("Final Result:\n", segment_and_detect_result)
+            #--------------------------------------------------------------#
+
+            #--------------------------------------------------------------#
+            print ('Merging: segment_and_detect & image_processing_logic_1')
+            if ((corner_points_3b != None) and \
+                    (segment_and_detect_result != None)):
+                combined_result_1 = corner_points_3b + \
+                                        segment_and_detect_result
+            elif ((corner_points_3b != None) and \
+                    (segment_and_detect_result == None)):
+                combined_result_1 = corner_points_3b
+            elif ((corner_points_3b == None) and \
+                    (segment_and_detect_result != None)):
+                combined_result_1 = segment_and_detect_result
+            else:
+                combined_result_1 = []
+            #--------------------------------------------------------------#
+
+            ####-------- Code for circle_and_square_1.py ---------------####
+            # Load image:
+            input_image_3 = PIL.Image.open(im_fn)
+
+            # Find circles
+            rmin = 18
+            rmax = 20
+            steps = 100
+            threshold = 0.4
+
+            points = []
+            for r in range(rmin, rmax + 1):
+                for t in range(steps):
+                    points.append((r, int(r * cos(2 * pi * t / steps)), 
+                                   int(r * sin(2 * pi * t / steps))))
+
+            acc = defaultdict(int)
+            for x, y in canny_edge_detector(input_image_3):
+                for r, dx, dy in points:
+                    a = x - dx
+                    b = y - dy
+                    acc[(a, b, r)] += 1
+
+            circles = []
+            for k, v in sorted(acc.items(), key=lambda i: -i[1]):
+                x, y, r = k
+                if v / steps >= threshold and all((x - xc) ** 2 + 
+                                    (y - yc) ** 2 > rc ** 2 for \
+                                            xc, yc, rc in circles):
+                    circles.append((x, y, r))
+            #print (len(circles))
+
+            all_rects = []
+            for x, y, r in circles:
+                temp_rect = [x-r, y-r, x+r, y+r]
+                all_rects.append(temp_rect)
+            #print (len(all_rects))
+
+            all_rects_2 = cv2.groupRectangles(all_rects, 1, 0.3)
+            #print (all_rects_2)
+
+            all_rects_3 = []
+            for i in range (0, len(all_rects_2[0])):
+                temp_1 = []
+                for j in range (0, len(all_rects_2[0][i])):
+                    temp_1.append(all_rects_2[0][i][j])
+                all_rects_3.append(temp_1)
+            #print (all_rects_3)
+
+            ## zooming
+            padding = 10
+            all_rects_4 = []
+            for i in range (0, len(all_rects_3)):
+                temp_2 = []
+                k1 = all_rects_3[i][0] - padding
+                temp_2.append(k1)
+                k2 = all_rects_3[i][1] - padding
+                temp_2.append(k2)
+                k3 = all_rects_3[i][2] + padding
+                temp_2.append(k3)
+                k4 = all_rects_3[i][3] + padding
+                temp_2.append(k4)
+                all_rects_4.append(temp_2)
+            #print (all_rects_4)
+
+            ## Checking for collision between the latest rectangles and circles
+            intersect  = []
+            for i in range (0, len(all_rects)):
+                for j in range (0, len(all_rects_4)):
+                    if ((all_rects[i][0] < all_rects_4[j][2]) and
+                        (all_rects[i][2] > all_rects_4[j][0]) and
+                        (all_rects[i][1] < all_rects_4[j][3]) and
+                        (all_rects[i][3] > all_rects_4[j][1])):
+                        intersect.append(all_rects[i])
+            #print (len(intersect))
+            #print (intersect)
+
+            non_intersect = []
+            for i in range (0, len(all_rects)):
+                if (all_rects[i] not in intersect):
+                    non_intersect.append(all_rects[i])
+            #print (len(non_intersect))
+
+            ## zooming the non_intersect area
+            non_intersect_2 = []
+            for i in range (0, len(non_intersect)):
+                temp_3 = []
+                x1 = non_intersect[i][0] - padding
+                temp_3.append(x1)
+                y1 = non_intersect[i][1] - padding
+                temp_3.append(y1)
+                x2 = non_intersect[i][2] + padding
+                temp_3.append(x2)
+                y2 = non_intersect[i][3] + padding
+                temp_3.append(y2)
+                non_intersect_2.append(temp_3)
+            #print (non_intersect_2)
+
+            all_rects_5 = []
+            for i in range (0, len(all_rects_4)):
+                all_rects_5.append(all_rects_4[i])
+            for i in range (0, len(non_intersect_2)):
+                all_rects_5.append(non_intersect_2[i])
+            #print (all_rects_5)
+
+            ## code of square_detect.py
+            img = cv2.imread(im_fn)
+            squares = find_squares(img)
+            square_list_2 = []
+            for i in range (0, len(squares)):
+                temp = []
+                temp.append(squares[i][0][0])
+                temp.append(squares[i][0][1])
+                temp.append(squares[i][2][0])
+                temp.append(squares[i][2][1])
+                square_list_2.append(temp)
+            #print (square_list_2)
+            #print (len(square_list_2))
+
+            for i in range (0, len(square_list_2)):
+                all_rects_5.append(square_list_2[i])
+            #print (all_rects_5)
+            ####-------------------------------------------------####
+                
+            ####-------------------------------------------------####
+            for i in range (0, len(all_rects_5)):
+                combined_result_1.append(all_rects_5[i])
+
+            if (0 != len(combined_result_1)):
+                # Removing of duplicate items
+                combined_result_2 = remove_duplicate(combined_result_1)
+                #print (combined_result_2)
+                #print ("combined_result_2 length: ", len(combined_result_2))
+
+            ##--Deleting Biggest Rectangle from Image Area Detection--##
+            sq_area_list = []
+            for i in range (0, len(combined_result_2)):
+                sq_area = int(abs(combined_result_2[i][0] - 
+                                      combined_result_2[i][2]) *
+                              abs(combined_result_2[i][1] - 
+                                      combined_result_2[i][3]))
+                temp_dict = {}
+                temp_dict['index'] = i
+                temp_dict['area'] = sq_area
+                sq_area_list.append(temp_dict)
+            #print (sq_area_list)
+            area_sequence = [item['area'] for item in sq_area_list]
+            max_area = max(area_sequence)
+            #print (max_area)
+
+            for i in range (0, len(sq_area_list)):
+                if (max_area == sq_area_list[i]['area']):
+                    index_max_area = sq_area_list[i]['index']
+            #print (index_max_area)
+
+            combined_result_2.pop(index_max_area)
+            #print ("modified combined_result_2: ", combined_result_2)
+            #print ("modified combined_result_2 length: ", 
+            #            len(combined_result_2))
+
+            text_area_detect_all_corners = []
+            for i in range (0, len(text_detection_result)):
+                temp = []
+                pt_1 = (text_detection_result[i][0], 
+                            text_detection_result[i][1])
+                temp.append(pt_1)
+                pt_2 = (text_detection_result[i][2], 
+                            text_detection_result[i][1])
+                temp.append(pt_2)
+                pt_3 = (text_detection_result[i][2], 
+                            text_detection_result[i][3])
+                temp.append(pt_3)
+                pt_4 = (text_detection_result[i][0], 
+                            text_detection_result[i][3])
+                temp.append(pt_4)
+                text_area_detect_all_corners.append(temp)
+            #print ("text_area_detect_all_corners list: ", 
+            #            text_area_detect_all_corners)
+
+            # Read image
+            blob_im = cv2.imread(im_fn, cv2.IMREAD_GRAYSCALE)
+            # Set up the detector with default parameters.
+            detector = cv2.SimpleBlobDetector_create()
+
+            # Detect blobs.
+            keypoints = detector.detect(blob_im)
+            #keypoints = detector.detect(labeled_img)
+            #print ("keypoints length: ", len(keypoints))
+
+            kpts = np.asarray([[p.pt[0], p.pt[1]] for p in keypoints])
+            #print (kpts)
+
+            independent_blobs = []
+            for i in range (0, len(kpts)):
+                for j in range (0, len(text_area_detect_all_corners)):
+                    rect_area = triangle_area(
+                                    text_area_detect_all_corners[j][0][0], 
+                                    text_area_detect_all_corners[j][0][1],
+                                    text_area_detect_all_corners[j][1][0],
+                                    text_area_detect_all_corners[j][1][1],
+                                    text_area_detect_all_corners[j][2][0],
+                                    text_area_detect_all_corners[j][2][1]) + \
+                                triangle_area(
+                                    text_area_detect_all_corners[j][0][0],
+                                    text_area_detect_all_corners[j][0][1],
+                                    text_area_detect_all_corners[j][3][0],
+                                    text_area_detect_all_corners[j][3][1],
+                                    text_area_detect_all_corners[j][2][0],
+                                    text_area_detect_all_corners[j][2][1])
+
+                    tri_area_1 = triangle_area(kpts[i][0], kpts[i][1], 
+                                    text_area_detect_all_corners[j][0][0],
+                                    text_area_detect_all_corners[j][0][1],
+                                    text_area_detect_all_corners[j][1][0],
+                                    text_area_detect_all_corners[j][1][1])
+
+                    tri_area_2 = triangle_area(kpts[i][0], kpts[i][1],
+                                    text_area_detect_all_corners[j][1][0],
+                                    text_area_detect_all_corners[j][1][1],
+                                    text_area_detect_all_corners[j][2][0],
+                                    text_area_detect_all_corners[j][2][1])
+
+                    tri_area_3 = triangle_area(kpts[i][0], kpts[i][1],
+                                    text_area_detect_all_corners[j][2][0],
+                                    text_area_detect_all_corners[j][2][1],
+                                    text_area_detect_all_corners[j][3][0],
+                                    text_area_detect_all_corners[j][3][1])
+
+                    tri_area_4 = triangle_area(kpts[i][0], kpts[i][1],
+                                    text_area_detect_all_corners[j][0][0],
+                                    text_area_detect_all_corners[j][0][1],
+                                    text_area_detect_all_corners[j][3][0],
+                                    text_area_detect_all_corners[j][3][1])
+
+                    if (rect_area == (tri_area_1 + tri_area_2 + tri_area_3 + \
+                                      tri_area_4)):
+                        #print ("Inside the rectangle")
+                        break
+
+                    if (rect_area != (tri_area_1 + tri_area_2 + tri_area_3 + \
+                            tri_area_4) and \
+                            (j == len(text_area_detect_all_corners)-1)):
+                        independent_blobs.append(kpts[i])
+            #print (independent_blobs)
+            #print ("independent_blobs length: ", len(independent_blobs))
+
+            blob_centre_list = []
+            for i in range (0, len(independent_blobs)):
+                temp = []
+                temp.append(int(independent_blobs[i][0]))
+                temp.append(int(independent_blobs[i][1]))
+                blob_centre_list.append(temp)
+            #print (blob_centre_list)
+
+            blob_rectangles = []
+            for i in range (0, len(blob_centre_list)):
+                temp = []
+                    
+                temp.append(int(blob_centre_list[i][0]) - 9)
+                temp.append(int(blob_centre_list[i][1]) + 9)
+                temp.append(int(blob_centre_list[i][0]) + 9)
+                temp.append(int(blob_centre_list[i][1]) - 9)
+
+                blob_rectangles.append(temp)
+            #print (blob_rectangles)
+
+            blob_rectangles_combined = cv2.groupRectangles(blob_rectangles, 
+                                                           1, 0.5)
+            #print ("blob_rectangles_combined: ", blob_rectangles_combined)
+            #print (len(blob_rectangles_combined))
+
+            final_blobs = []
+            for i in range (0, len(blob_rectangles_combined[0])):
+                temp = []
+                temp.append(blob_rectangles_combined[0][i][0])
+                temp.append(blob_rectangles_combined[0][i][1])
+                temp.append(blob_rectangles_combined[0][i][2])
+                temp.append(blob_rectangles_combined[0][i][3])
+                final_blobs.append(temp)
+            #print ("final_blobs: ", final_blobs)    
+
+            combined_result_3 = text_detection_result + combined_result_2 + \
+                                    final_blobs
+            #print ("combined_result_3: ", combined_result_3)
+            combined_result_4 = []
+            for i in range (0, len(combined_result_3)):
+                for j in range (i+1, len(combined_result_3)):
+                    if ((abs(combined_result_3[i][0] - 
+                            combined_result_3[j][0]) <= 2) and \
+                        (abs(combined_result_3[i][1] - 
+                            combined_result_3[j][1]) <= 2) and \
+                        (abs(combined_result_3[i][2] - 
+                            combined_result_3[j][2]) <= 2) and \
+                        (abs(combined_result_3[i][3] - 
+                            combined_result_3[j][3]) <= 2)):
+                        combined_result_4.append(combined_result_3[j])
+            #print (combined_result_4)
+            combined_result_4a = [x for x in combined_result_3 if \
+                                      x not in combined_result_4]
+            #print (combined_result_4a)
+
+            combined_result_4b = []
+            for i in range (0, len(combined_result_4a)):
+                if ((float(combined_result_4a[i][0]) > 0) and \
+                    (float(combined_result_4a[i][1]) > 0) and \
+                    (float(combined_result_4a[i][2]) > 0) and \
+                    (float(combined_result_4a[i][3]) > 0)):
+                    combined_result_4b.append(combined_result_4a[i])
+            #print ("combined_result_4b: ", combined_result_4b)
+            #print (len(combined_result_4b))                
+
+            combined_result_5 = combined_result_4b + corner_points_4b 
+            combined_result_5b = remove_duplicate(combined_result_5)
+
+            for i in range (0, len(combined_result_5b)):
+                diff_1 = int(abs(combined_result_5b[i][0] - combined_result_5b[i][2]))
+                diff_2 = int(abs(combined_result_5b[i][1] - combined_result_5b[i][3]))
+                #print ("count= ", i, diff_1, diff_2)
+                if ((diff_1 < 10) and (diff_2 < 10)):
+                    combined_result_5b[i][0] = combined_result_5b[i][0] - 5
+                    combined_result_5b[i][2] = combined_result_5b[i][2] + 5
+                    combined_result_5b[i][1] = combined_result_5b[i][1] - 5
+                    combined_result_5b[i][3] = combined_result_5b[i][3] + 5
+            #print ("combined_result_5b: ", combined_result_5b)
+            #print (len(combined_result_5b))
+
+            combined_result_6 = []
+            for i in range (0, len(combined_result_5b)):
+                for j in range (i+1, len(combined_result_5b)):
+                    if ((abs(combined_result_5b[i][0] -
+                            combined_result_5b[j][0]) <= 3) and \
+                        (abs(combined_result_5b[i][1] -
+                            combined_result_5b[j][1]) <= 3) and \
+                        (abs(combined_result_5b[i][2] -
+                            combined_result_5b[j][2]) <= 3) and \
+                        (abs(combined_result_5b[i][3] -
+                            combined_result_5b[j][3]) <= 3)):
+                        combined_result_6.append(combined_result_5b[j])
+            #print (combined_result_6)
+            combined_result_6b = [x for x in combined_result_5b if \
+                                      x not in combined_result_6]
+            #print ("combined_result_6b: ", combined_result_6b)
+            print ("combined_result_6b length: ",len(combined_result_6b))
+
+            ## removing of the inner detected areas from Text Detected Areas
+            """
+            ##########################################################
+            #    (X1,Y2)       x axis -->          (X2,Y2)          ##
+            #       .---------------------------------.             A#
+            #   y   |   Text Detected Area            |             R#
+            #       |                                 |             P# 
+            #   a   | (x1,y2)                 (x2,y2) |             A#
+            #   x   |   .-----------------------.     |             N#
+            #   i   |   | Non-Text Detected Area|     |              #
+            #   s   |   '-----------------------'     |             G#
+            #       | (x1,y1)                 (x2,y1) |             H#
+            #   |   |                                 |             O#
+            #   v   |                                 |             S#
+            #       '---------------------------------'             E#
+            #    (X1,Y1)                           (X2,Y1)          ##
+            ##########################################################
+            """
+            to_be_removed = []
+            for i in range (0, len(combined_result_6b)):
+                for j in range (0, len(combined_result_6b)):
+                    if ((i != j) and \
+                        (combined_result_6b[i] in text_detection_result) and \
+                        (combined_result_6b[j] not in text_detection_result)):
+                        # logic for above diagram
+                        if ((combined_result_6b[i][0] <= 
+                                combined_result_6b[j][0]) and \
+                            (combined_result_6b[i][1] >=
+                                combined_result_6b[j][1]) and \
+                            (combined_result_6b[i][2] >= 
+                                combined_result_6b[j][2]) and \
+                            (combined_result_6b[i][3] <=
+                                combined_result_6b[j][3])):
+                            to_be_removed.append(combined_result_6b[j])
+            #print ("to_be_removed: ", to_be_removed)
+            #print (len(to_be_removed))
+            combined_result_6c = [x for x in combined_result_6b if \
+                                      x not in to_be_removed]
+            print ("combined_result_6c: ", combined_result_6c)
+            print ("combined_result_6c length: ", len(combined_result_6c))
+
+            result_image_and_text_creation(output_image_name_2, 
+                                           input_image_2,
+                                           res_file,
+                                           combined_result_6c)
+
+            print ("Image Area Detection has been completed.")
+            print ("Bye Bye !! See you again")
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+if __name__ == '__main__':
+    tf.compat.v1.app.run()
+#------------------------------------------------------------------------------#
+
