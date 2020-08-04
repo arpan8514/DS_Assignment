@@ -1,0 +1,2434 @@
+#------------------------------------------------------------------------------#
+import json
+from operator import itemgetter
+from itertools import chain, combinations
+import string
+import copy
+import queue
+from threading import Thread
+import re
+import difflib
+import time
+
+import nltk
+from nltk import word_tokenize
+from nltk.corpus import brown
+from nltk.tree import Tree
+from nltk.corpus import stopwords
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+class Noun_Phrase_Extraction_Arpan(object):
+
+    brown_train = brown.tagged_sents(categories='news')
+    regexp_tagger = nltk.RegexpTagger(
+        [
+            (r'^-?[0-9]+(.[0-9]+)?$', 'CD'),
+            (r'(-|:|;)$', ':'),
+            (r'\'*$', 'MD'),
+            (r'(The|the|A|a|An|an)$', 'AT'),
+            (r'.*able$', 'JJ'),
+            (r'^[A-Z].*$', 'NNP'),
+            (r'.*ness$', 'NN'),
+            (r'.*ly$', 'RB'),
+            (r'.*s$', 'NNS'),
+            (r'.*ing$', 'VBG'),
+            (r'.*ed$', 'VBD'),
+            (r'.*', 'NN')
+        ]
+    )
+
+    unigram_tagger = nltk.UnigramTagger(brown_train, backoff=regexp_tagger)
+    #print type(unigram_tagger)
+    bigram_tagger = nltk.BigramTagger(brown_train, backoff=unigram_tagger)
+    #trigram_tagger = nltk.BigramTagger(brown_train, backoff=bigram_tagger)
+
+    # Grammar Definition
+    cfg = {}
+    cfg["NNP+NNP"] = "NNP"
+    cfg["NN+NN"] = "NNI"
+    cfg["NNI+NN"] = "NNI"
+    cfg["JJ+JJ"] = "JJ"
+    cfg["JJ+NN"] = "NNI"
+
+    ##-- Constructor --##
+    def __init__(self, sentence):
+        self.sentence = sentence
+
+    # Split the sentence into single words/tokens
+    def tokenize_sentence(self, sentence):
+        #tokens = nltk.word_tokenize(sentence)
+        tokens = sentence.split(" ")
+        return tokens
+
+    # Normalize brown corpus' tags ("NN", "NN-PL", "NNS" > "NN")
+    def normalize_tags(self, tagged):
+        n_tagged = []
+        for t in tagged:
+            if t[1] == "NP-TL" or t[1] == "NP":
+                n_tagged.append((t[0], "NNP"))
+                continue
+            if t[1].endswith("-TL"):
+                n_tagged.append((t[0], t[1][:-3]))
+                continue
+            if t[1].endswith("S"):
+                n_tagged.append((t[0], t[1][:-1]))
+                continue
+            n_tagged.append((t[0], t[1]))
+        return n_tagged
+
+    # Extract the main topics
+    def extract(self):
+
+        tokens = self.tokenize_sentence(self.sentence)
+        tags = self.normalize_tags(self.bigram_tagger.tag(tokens))
+        #tags = self.normalize_tags(trigram_tagger.tag(tokens))
+        print (tags)
+        merge = True
+        while merge:
+            merge = False
+            for x in range(0, len(tags) - 1):
+                t1 = tags[x]
+                t2 = tags[x + 1]
+                key = "%s+%s" % (t1[1], t2[1])
+                value = self.cfg.get(key, '')
+                if value:
+                    merge = True
+                    tags.pop(x)
+                    tags.pop(x)
+                    match = "%s %s" % (t1[0], t2[0])
+                    pos = value
+                    tags.insert(x, (match, pos))
+                    break
+
+        matches = []
+        for t in tags:
+            if (t[1] == "NNP" or t[1] == "NNI" or t[1] == "NN" or t[1] == "CD"): 
+                #or t[1] == "VB" or t[1] == "VBG" ):
+                matches.append(t[0])
+        return matches
+
+    def extract_2(self):
+
+        tokens = self.tokenize_sentence(self.sentence)
+        tags = self.normalize_tags(bigram_tagger.tag(tokens))
+        #tags = self.normalize_tags(trigram_tagger.tag(tokens))
+        print (tags)
+        merge = True
+        while merge:
+            merge = False
+            for x in range(0, len(tags) - 1):
+                t1 = tags[x]
+                t2 = tags[x + 1]
+                key = "%s+%s" % (t1[1], t2[1])
+                value = cfg.get(key, '')
+                if value:
+                    merge = True
+                    tags.pop(x)
+                    tags.pop(x)
+                    match = "%s %s" % (t1[0], t2[0])
+                    pos = value
+                    tags.insert(x, (match, pos))
+                    break
+
+        matches = []
+        for t in tags:
+            if (t[1] == "VB" or t[1] == "VBG" ):
+                matches.append(t[0])
+        return matches
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_for_market_place(input_query, market_place):
+    print ("Function: [check_for_market_place]")
+    #print ("input_query in check_for_market_place: [%s]" %input_query)
+    if (isinstance(input_query, list)):
+        input_query = "".join(input_query)
+    #print (input_query)
+    user_input = input_query.lower()
+    print ("User Input: [%s]" %user_input)
+
+    market_place_found = 0
+    
+    for i in range (0, len(market_place)):
+        temp_item = market_place[i].lower()
+        if (user_input == temp_item):
+            market_place_found = temp_item
+            break
+
+    return market_place_found
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_for_delivery_mode(input_query, temp_dict, delivery_mode):
+    print ("Function: [check_for_delivery_mode]")
+    delivery_mode_found = 0
+    
+    for i in range (0, len(delivery_mode)):
+        if ((input_query.lower() == delivery_mode[i].lower()) or 
+            (input_query[0:-1].lower() == delivery_mode[i].lower())):
+            print("Delivery Mode found")
+            temp_dict["deliveryModeFlag"] = "yes"
+            temp_dict["deliveryMode"] = delivery_mode[i].lower()
+            delivery_mode_found = 1
+            break    
+
+    return delivery_mode_found
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_for_category(input_query, seco_category, prim_category):
+    if (isinstance(input_query, list)):
+        input_query = "".join(input_query)
+    user_input = input_query.lower()
+    print ("User Input at function <check_for_category>: [%s]" %user_input)
+
+    secondary_cat = 0
+    primary_cat = 0
+    
+    for j in range (0, len(seco_category)):
+        temp_item = seco_category[j].lower()
+        if (user_input == temp_item):
+            secondary_cat = temp_item
+            break
+        
+    for k in range (0, len(prim_category)):
+        temp_item = prim_category[k].lower()
+        if (user_input == temp_item):
+            primary_cat = temp_item
+            break
+
+    return secondary_cat, primary_cat
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def did_you_mean_Arpan(query_string, tags_2):
+
+    #print ("did_you_mean_Arpan {query_string}: [%s]" %query_string)
+    qs_tokens = (query_string.split())
+    qs_tokens_length = len(qs_tokens)
+    tags_2_len = len(tags_2)
+
+    high_score_tag = []
+    dict_1 = {}
+    for i in range (0, qs_tokens_length):
+        temp_1 = []
+        for j in range (0, tags_2_len):
+            temp_dict = {}
+            temp_dict["tag"] = tags_2[j]
+            temp_dict["score"] = difflib.SequenceMatcher(None, qs_tokens[i],
+                                 tags_2[j]).ratio()
+            temp_1.append(temp_dict)
+        required_item = max(temp_1, key=lambda x:x['score'])
+        high_score_tag.append(required_item)
+    #print ("high_score_tag: ", high_score_tag)
+    dym_tag = list(map(itemgetter("tag"), high_score_tag)) 
+    #print (dym_tag)
+    dym_tag_str = " ".join(dym_tag)
+    #print ("didYouMean"_str: [%s]" %dym_tag_str)
+
+    if (query_string != dym_tag_str.lower()):
+        return (dym_tag_str)
+    else:
+        return None
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def handle_nlp_extracted_phrase(nlp_phrase, tags_2):
+    print ("Function: [handle_nlp_extracted_phrase]")
+    print ("Input nlp_phrase: [%s]" %nlp_phrase)
+    tags_2_len = len(tags_2)
+
+    nlp_phrase_2 = re.sub(
+        '[ãèéªã½ã¼ã¹ãäÃ³ä½ç³ãå³ãä½ºç¹¹æ³¾ï²µàâÐÑÄÅÂêëìíö©ð»ñŒð½ñ‹ñ]', '', 
+        nlp_phrase)
+    nlp_phrase_3 = re.sub(r"\W+|_", " ", str(nlp_phrase_2))
+    #print ("nlp_phrase_3: ", nlp_phrase_3)
+ 
+    phrase = nlp_phrase_3.split(" ")
+    #print (phrase)
+    #print (len(phrase))
+
+    phrase_2 = []
+    for i in range (0, len(phrase)):
+        if (phrase[i] not in phrase_2):
+            phrase_2.append(phrase[i])
+    #print (phrase_2)
+    #print (len(phrase_2))
+
+    exact_phrase_match = []
+    for i in range (0, len(phrase_2)):
+        for j in range(0, tags_2_len):
+            if (phrase_2[i].lower() == tags_2[j].lower()):
+                exact_phrase_match.append(phrase_2[i])
+                break
+
+    #print (exact_phrase_match)
+    return (exact_phrase_match)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_single_word_input(
+    tokens, 
+    temp_dict, 
+    tags_2,
+    proficiency_level):
+
+    print ("Function Name: [%s]" %process_single_word_input)
+    tokens_str = " ".join(tokens)
+    tokens_str = tokens_str.lower()
+
+    temp_dict["secondaryCategoryFlag"] = "no"
+    temp_dict["primaryCategoryFlag"] = "no"
+    temp_dict["activityNameMatchFlag"] = "no"
+    temp_dict["activityCodeMatchFlag"] = "no"
+    temp_dict["skillNameMatchFlag"] = "no"
+    temp_dict["skillCodeMatchFlag"] = "no"
+    temp_dict["deliveryModeFlag"] = "no"
+    temp_dict["learningObjectFlag"] = "no"
+    temp_dict["activityLabelFlag"] = "no"
+    temp_dict["phrase"] = "no"
+    temp_dict["flagProficiency"] = "no"
+    temp_dict["userSearchTags"] = tokens_str
+
+    for i in range (0, len(proficiency_level)):
+        if (tokens_str == proficiency_level[i].lower()):
+            temp_dict["flagProficiency"] = "yes"
+            temp_dict["userProficiency_search"] = tokens_str
+            temp_dict["userSearchTags"] = "no"
+            break
+
+    if ("no" != temp_dict["userSearchTags"]):
+        dym_val = did_you_mean_Arpan(tokens_str, tags_2) 
+        if (None != dym_val):
+            temp_dict["userSearchTags"] = "no"
+            temp_dict["didYouMean"] = dym_val.capitalize()
+        else:
+            temp_dict["didYouMean"] = "no"
+    return (temp_dict)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_two_words_input(
+    tokens, 
+    temp_dict,
+    seco_category, 
+    prim_category,
+    all_activity_labels_no_dup,
+    delivery_mode,
+    market_place,
+    all_keywords,
+    tags_2,
+    all_items,
+    proficiency_level):
+
+    print ("function: [process_two_words_input]")
+        
+    two_words_input_flag = 0
+
+    temp_dict["activityNameMatchFlag"] = "no"
+    temp_dict["activityCodeMatchFlag"] = "no"
+    temp_dict["skillNameMatchFlag"] = "no"
+    temp_dict["skillCodeMatchFlag"] = "no"
+    temp_dict["learningObjectFlag"] = "no"
+    temp_dict["activityLabelFlag"] = "no"
+    temp_dict["deliveryModeFlag"] = "no"
+    temp_dict["flagProficiency"] = "no"
+    temp_dict["userSearchTags"] = "no"
+    temp_dict["secondaryCategoryFlag"] = "no"
+    temp_dict["primaryCategoryFlag"] = "no"
+    temp_dict["marketPlaceFlag"] = "no"
+
+    ##-----------------------------------------------------------------##
+    activity_label_found = 0
+    lo_type_found = 0
+    delivery_mode_found = 0
+    market_place_found = 0
+    ##-- Wrong Input: <Activity Label> <LO Type> ----##
+    ## Seminar Resource
+    if (0 == two_words_input_flag):
+        for i in range (0, len(all_activity_labels_no_dup)):
+            if ((tokens[0].lower() == all_activity_labels_no_dup[i].lower()) or   
+                (tokens[0][0:-1].lower() == all_activity_labels_no_dup[i].lower())):
+                temp_dict["activityLabelFlag"] = "yes"
+                temp_dict["activityLabel"] = all_activity_labels_no_dup[i].lower()
+                print ("Activity Label found")
+                activity_label_found = 1
+                break
+        for j1 in range (0, len(delivery_mode)):
+            if ((tokens[0].lower() == delivery_mode[j1].lower()) or   
+                (tokens[0][0:-1].lower() == delivery_mode[j1].lower())):
+                temp_dict["deliveryModeFlag"] = "yes"
+                temp_dict["deliveryMode"] = delivery_mode[j1].lower()
+                delivery_mode_found = 1
+                break
+        for j2 in range (0, len(market_place)):
+            if ((tokens[0].lower() == market_place[j2].lower()) or
+                (tokens[0][0:-1].lower() == market_place[j2].lower())):
+                temp_dict["marketPlaceFlag"] = "yes"
+                temp_dict["marketPlace"] = market_place[j2].lower()
+                market_place_found = 1
+                break
+        for k in range (0, len(all_keywords)):
+            if ((tokens[1].lower() == all_keywords[k].lower()) or
+                (tokens[1][0:-1].lower() == all_keywords[k].lower())):
+                temp_dict["learningObjectFlag"] = "yes"
+                temp_dict["learningObject"] = all_keywords[k].lower()
+                print ("Learning Object found at token 1")
+                lo_type_found = 1
+                break
+        if ((1 == activity_label_found) or (1 == delivery_mode_found) or 
+            (1 == market_place_found)):
+            if (1 == lo_type_found):
+                two_words_input_flag = 1
+                ## Correct Input ##
+            else: ## Seminar Python ##
+                temp_dict["phrase"] = tokens[1].lower()
+                temp_dict["userSearchTags"] = tokens[1].lower().split(" ")
+                que_1 = queue.Queue()
+                t1 = Thread(target=lambda q1, a1, b1, c1: q1.put(
+                            check_for_category(a1, b1, c1)),
+                            args=(que_1, tokens[1].lower(),
+                                  seco_category, prim_category))
+                que_2 = queue.Queue()
+                t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                            did_you_mean_Arpan(a2, b2)),
+                            args=(que_2, tokens[1].lower(), tags_2))
+                que_3 = queue.Queue()
+                t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                            check_exact_skill_match(a3, b3)),
+                            args=(que_3, tokens[1].lower(), all_items))
+                que_4 = queue.Queue()
+                t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                            check_for_market_place(a4, b4)),
+                            args=(que_4, tokens[1].lower(), market_place))
+                t1.start()
+                t2.start()
+                t3.start()
+                t4.start()
+                t1.join()
+                t2.join()
+                t3.join()
+                t4.join()
+                scm, pcm = que_1.get()
+                if (0 != scm):
+                    temp_dict["secondaryCategoryFlag"] = "yes"
+                    temp_dict["secondaryCategory"] = scm
+                if (0 != pcm):
+                    temp_dict["primaryCategoryFlag"] = "yes"
+                    temp_dict["primaryCategory"] = pcm
+                dym_val = que_2.get()
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                skill_match, associated_tags = que_3.get()
+                if (1 == skill_match): 
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = tokens[1].lower()
+                market_place_flag = que_4.get()
+                if (0 != market_place_flag):
+                    temp_dict["marketPlaceFlag"] = "yes"
+                    temp_dict["marketPlace"] = market_place_flag
+                    temp_dict["userSearchTags"] = "no"
+                two_words_input_flag = 1
+
+        ## Java Training
+        else:
+            if (1 == lo_type_found):
+                temp_dict["phrase"] = tokens[0].lower()
+                temp_dict["userSearchTags"] = tokens[0].lower().split(" ")
+                que_1 = queue.Queue()
+                t1 = Thread(target=lambda q1, a1, b1, c1: q1.put(
+                            check_for_category(a1, b1, c1)),
+                            args=(que_1, tokens[0].lower(),
+                                  seco_category, prim_category))
+                que_2 = queue.Queue()
+                t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                            did_you_mean_Arpan(a2, b2)),
+                            args=(que_2, tokens[0].lower(), tags_2))
+                que_3 = queue.Queue()
+                t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                            check_exact_skill_match(a3, b3)),
+                            args=(que_3, tokens[0].lower(), all_items))
+                que_4 = queue.Queue()
+                t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                            check_for_market_place(a4, b4)),
+                            args=(que_4, tokens[0].lower(), market_place))
+                t1.start()
+                t2.start()
+                t3.start()
+                t4.start()
+                t1.join()
+                t2.join()
+                t3.join()
+                t4.join()
+                scm, pcm = que_1.get()
+                if (0 != scm):
+                    temp_dict["secondaryCategoryFlag"] = "yes"
+                    temp_dict["secondaryCategory"] = scm
+                if (0 != pcm):
+                    temp_dict["primaryCategoryFlag"] = "yes"
+                    temp_dict["primaryCategory"] = pcm
+                dym_val = que_2.get()
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                skill_match, associated_tags = que_3.get()
+                if (1 == skill_match): 
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = tokens[0].lower()
+                market_place_flag = que_4.get()
+                if (0 != market_place_flag):
+                    temp_dict["marketPlaceFlag"] = "yes"
+                    temp_dict["marketPlace"] = market_place_flag
+                    temp_dict["userSearchTags"] = "no"
+                two_words_input_flag = 1
+    ##----------------------------------------------------------------##
+
+    ##----------------------------------------------------------------##    
+    activity_label_found = 0
+    lo_type_found = 0
+    delivery_mode_found = 0
+    market_place_found = 0
+    ##-- Wrong Input: <LO Type> <Activity Label> ----##
+    ## Resource Seminar
+    if (0 == two_words_input_flag):
+        for i in range (0, len(all_activity_labels_no_dup)):
+            if ((tokens[1].lower() == all_activity_labels_no_dup[i].lower()) or
+                (tokens[1][0:-1].lower() == all_activity_labels_no_dup[i].
+                                            lower())):
+                temp_dict["activityLabelFlag"] = "yes"
+                temp_dict["activityLabel"] = all_activity_labels_no_dup[i].\
+                                             lower()
+                activity_label_found = 1
+                break
+        for j1 in range (0, len(delivery_mode)):
+            if ((tokens[1].lower() == delivery_mode[j1].lower()) or   
+                (tokens[1][0:-1].lower() == delivery_mode[j1].lower())):
+                temp_dict["deliveryModeFlag"] = "yes"
+                temp_dict["deliveryMode"] = delivery_mode[j1].lower()
+                delivery_mode_found = 1
+                break
+        for j2 in range (0, len(market_place)):
+            if ((tokens[1].lower() == market_place[j2].lower()) or
+                (tokens[1][0:-1].lower() == market_place[j2].lower())):
+                temp_dict["marketPlaceFlag"] = "yes"
+                temp_dict["marketPlace"] = market_place[j2].lower()
+                market_place_found = 1
+                break
+        for k in range (0, len(all_keywords)):
+            if ((tokens[0].lower() == all_keywords[k].lower()) or
+                (tokens[0][0:-1].lower() == all_keywords[k].lower())):
+                temp_dict["learningObjectFlag"] = "yes"
+                temp_dict["learningObject"] = all_keywords[k].lower()
+                lo_type_found = 1
+                print ("LO Type is found")
+                break
+        if ((1 == activity_label_found) or (1 == delivery_mode_found) or 
+            (1 == market_place_found)): 
+            if (1 == lo_type_found):
+                print ("I am here 1")
+                two_words_input_flag = 1
+            ## Correct Input ##
+            else: ## Python Seminar ##
+                temp_dict["phrase"] = tokens[0].lower()
+                temp_dict["userSearchTags"] = tokens[0].lower().split(" ")
+                print ("I am here 2")        
+                que_1 = queue.Queue()
+                t1 = Thread(target=lambda q1, a1, b1, c1: q1.put(
+                            check_for_category(a1, b1, c1)),
+                            args=(que_1, tokens[0].lower(),
+                                  seco_category, prim_category))
+                que_2 = queue.Queue()
+                t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                            did_you_mean_Arpan(a2, b2)),
+                            args=(que_2, tokens[0].lower(), tags_2))
+                que_3 = queue.Queue()
+                t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                            check_exact_skill_match(a3, b3)),
+                            args=(que_3, tokens[0].lower(), all_items))
+                que_4 = queue.Queue()
+                t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                            check_for_market_place(a4, b4)),
+                            args=(que_4, tokens[1].lower(), market_place))
+                t1.start()
+                t2.start()
+                t3.start()
+                t4.start()
+                t1.join()
+                t2.join()
+                t3.join()
+                t4.join()
+                scm, pcm = que_1.get()
+                if (0 != scm):
+                    temp_dict["secondaryCategoryFlag"] = "yes"
+                    temp_dict["secondaryCategory"] = scm
+                if (0 != pcm):
+                    temp_dict["primaryCategoryFlag"] = "yes"
+                    temp_dict["primaryCategory"] = pcm
+                dym_val = que_2.get()
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                skill_match, associated_tags = que_3.get()
+                if (1 == skill_match): 
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = tokens[0].lower()
+                market_place_flag = que_4.get()
+                if (0 != market_place_flag):
+                    temp_dict["marketPlaceFlag"] = "yes"
+                    temp_dict["marketPlace"] = market_place_flag
+                two_words_input_flag = 1
+
+        ## example: Training Java
+        else:
+            if (1 == lo_type_found):
+                temp_dict["phrase"] = tokens[1].lower()
+                temp_dict["userSearchTags"] = tokens[1].lower().split(" ")
+                print ("I am here 3")        
+                que_1 = queue.Queue()
+                t1 = Thread(target=lambda q1, a1, b1, c1: q1.put(
+                            check_for_category(a1, b1, c1)),
+                            args=(que_1, tokens[1].lower(),
+                                  seco_category, prim_category))
+                que_2 = queue.Queue()
+                t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                            did_you_mean_Arpan(a2, b2)),
+                            args=(que_2, tokens[1].lower(), tags_2))
+                que_3 = queue.Queue()
+                t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                            check_exact_skill_match(a3, b3)),
+                            args=(que_3, tokens[1].lower(), all_items))
+                que_4 = queue.Queue()
+                t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                            check_for_market_place(a4, b4)),
+                            args=(que_4, tokens[1].lower(), market_place))
+                t1.start()
+                t2.start()
+                t3.start()
+                t4.start()
+                t1.join()
+                t2.join()
+                t3.join()
+                t4.join()
+                scm, pcm = que_1.get()
+                if (0 != scm):
+                    temp_dict["secondaryCategoryFlag"] = "yes"
+                    temp_dict["secondaryCategory"] = scm
+                if (0 != pcm):
+                    temp_dict["primaryCategoryFlag"] = "yes"
+                    temp_dict["primaryCategory"] = pcm
+                dym_val = que_2.get()
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                skill_match, associated_tags = que_3.get()
+                if (1 == skill_match): 
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = tokens[1].lower()
+                market_place_flag = que_4.get()
+                if (0 != market_place_flag):
+                    temp_dict["marketPlaceFlag"] = "yes"
+                    temp_dict["marketPlace"] = market_place_flag
+                two_words_input_flag = 1 
+    ##----------------------------------------------##
+
+    ##-- example: Advanced Java --------------------##
+    ##-- example: Python Beginner ------------------##
+    if (0 == two_words_input_flag):
+        print ("CHK -2b")
+        for i in range (0, len(proficiency_level)):
+            if (tokens[0].lower() == proficiency_level[i].lower()): 
+                temp_dict["flagProficiency"] = "yes"
+                temp_dict["userProficiency_search"] = proficiency_level[i].\
+                                                      lower()
+                temp_dict["phrase"] = tokens[1].lower()
+                temp_dict["userSearchTags"] = tokens[1].lower().split(" ")
+                dym_val = did_you_mean_Arpan(tokens[1].lower(), tags_2)
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                    que_1 = queue.Queue()
+                    t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                                check_exact_skill_match(a1, b1)),
+                                args=(que_1, temp_dict["userSearchTags"], all_items))
+                    que_2 = queue.Queue()
+                    t2 = Thread(target=lambda q2, a2, b2, c2: q2.put(
+                                check_for_category(a2, b2, c2)),
+                                args=(que_2, temp_dict["userSearchTags"],
+                                      seco_category, prim_category))
+                    t1.start()
+                    t2.start()
+                    t1.join()
+                    t2.join()
+                    skill_match, associated_tags = que_1.get()
+                    if (1 == skill_match): 
+                        temp_dict["skillNameMatchFlag"] = "yes"
+                        tag_item = temp_dict["userSearchTags"]
+                        if (isinstance(tag_item, list)):
+                            tag_item_str = "".join(tag_item)
+                            temp_dict["skillName"] = tag_item_str
+                        else:  
+                            temp_dict["skillName"] = tag_item
+                    scm, pcm = que_2.get()
+                    if (0 != scm):
+                        temp_dict["secondaryCategoryFlag"] = "yes"
+                        temp_dict["secondaryCategory"] = scm
+                    if (0 != pcm):
+                        temp_dict["primaryCategoryFlag"] = "yes"
+                        temp_dict["primaryCategory"] = pcm
+                two_words_input_flag = 1
+                break
+            if (tokens[1].lower() == proficiency_level[i].lower()):
+                temp_dict["flagProficiency"] = "yes"
+                temp_dict["userProficiency_search"] = proficiency_level[i].lower()
+                temp_dict["phrase"] = tokens[0].lower()
+                temp_dict["userSearchTags"] = tokens[0].lower().split(" ")
+                dym_val = did_you_mean_Arpan(tokens[0].lower(), tags_2)
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                    que_1 = queue.Queue()
+                    t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                                check_exact_skill_match(a1, b1)),
+                                args=(que_1, temp_dict["userSearchTags"], all_items))
+                    que_2 = queue.Queue()
+                    t2 = Thread(target=lambda q2, a2, b2, c2: q2.put(
+                                check_for_category(a2, b2, c2)),
+                                args=(que_2, temp_dict["userSearchTags"],
+                                      seco_category, prim_category))
+                    t1.start()
+                    t2.start()
+                    t1.join()
+                    t2.join()
+                    skill_match, associated_tags = que_1.get()
+                    if (1 == skill_match):
+                        temp_dict["skillNameMatchFlag"] = "yes"
+                        tag_item = temp_dict["userSearchTags"]
+                        if (isinstance(tag_item, list)):
+                            tag_item_str = "".join(tag_item)
+                            temp_dict["skillName"] = tag_item_str
+                        else:
+                            temp_dict["skillName"] = tag_item
+                    scm, pcm = que_2.get()
+                    if (0 != scm):
+                        temp_dict["secondaryCategoryFlag"] = "yes"
+                        temp_dict["secondaryCategory"] = scm
+                    if (0 != pcm):
+                        temp_dict["primaryCategoryFlag"] = "yes"
+                        temp_dict["primaryCategory"] = pcm
+                two_words_input_flag = 1
+                break
+    ##--------------------------------------------------##
+
+    ## example: Python Coaching --> Delivery Mode
+    ## example: Azure Hackathons --> Delivery Mode
+    ## example: Python Brainbench --> Market Place
+    ## example: Java Udemy --> Market Place
+    ## example: Webscrape C++ --> Market Place 
+    if (0 == two_words_input_flag):
+        print ("CHK -2b_2")
+        for i in range (0, len(delivery_mode)):
+            if (tokens[0].lower() == delivery_mode[i].lower()): 
+                temp_dict["deliveryModeFlag"] = "yes"
+                temp_dict["deliveryMode"] = delivery_mode[i].lower()
+                temp_dict["phrase"] = tokens[1].lower()
+                temp_dict["userSearchTags"] = tokens[1].lower().split(" ")
+                dym_val = did_you_mean_Arpan(tokens[1].lower(), tags_2)
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                    que_1 = queue.Queue()
+                    t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                                check_exact_skill_match(a1, b1)),
+                                args=(que_1, temp_dict["userSearchTags"], all_items))
+                    que_2 = queue.Queue()
+                    t2 = Thread(target=lambda q2, a2, b2, c2: q2.put(
+                                check_for_category(a2, b2, c2)),
+                                args=(que_2, temp_dict["userSearchTags"],
+                                      seco_category, prim_category))
+                    que_3 = queue.Queue()
+                    t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                                check_for_market_place(a3, b3)),
+                                args=(que_3, temp_dict["userSearchTags"], 
+                                      market_place))
+                    t1.start()
+                    t2.start()
+                    t3.start()
+                    t1.join()
+                    t2.join()
+                    t3.join()
+                    skill_match, associated_tags = que_1.get()
+                    if (1 == skill_match): 
+                        temp_dict["skillNameMatchFlag"] = "yes"
+                        tag_item = temp_dict["userSearchTags"]
+                        if (isinstance(tag_item, list)):
+                            tag_item_str = "".join(tag_item)
+                            temp_dict["skillName"] = tag_item_str
+                        else:
+                            temp_dict["skillName"] = tag_item
+                    scm, pcm = que_2.get()
+                    if (0 != scm):
+                        temp_dict["secondaryCategoryFlag"] = "yes"
+                        temp_dict["secondaryCategory"] = scm
+                    if (0 != pcm):
+                        temp_dict["primaryCategoryFlag"] = "yes"
+                        temp_dict["primaryCategory"] = pcm
+                    ## Wrong Input: <Delivery Mode> <Market Place>
+                    ## Coaching Udemy
+                    market_place_flag = que_3.get()
+                    if (0 != market_place_flag):
+                        temp_dict["marketPlaceFlag"] = "yes"
+                        temp_dict["marketPlace"] = market_place_flag
+                        temp_dict["userSearchTags"] = "no"
+                two_words_input_flag = 1
+                break
+            if (tokens[1].lower() == delivery_mode[i].lower()):
+                print (tokens[1].lower())
+                temp_dict["deliveryModeFlag"] = "yes"
+                temp_dict["deliveryMode"] = delivery_mode[i].lower()
+                temp_dict["phrase"] = tokens[0].lower()
+                temp_dict["userSearchTags"] = tokens[0].lower().split(" ")
+                dym_val = did_you_mean_Arpan(tokens[0].lower(), tags_2)
+                if (None != dym_val):
+                    temp_dict["userSearchTags"] = "no"
+                    temp_dict["didYouMean"] = dym_val.capitalize()
+                else:    
+                    temp_dict["didYouMean"] = "no" 
+                    que_1 = queue.Queue()
+                    t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                                check_exact_skill_match(a1, b1)),
+                                args=(que_1, temp_dict["userSearchTags"], all_items))
+                    que_2 = queue.Queue()
+                    t2 = Thread(target=lambda q2, a2, b2, c2: q2.put(
+                                check_for_category(a2, b2, c2)),
+                                args=(que_2, temp_dict["userSearchTags"],
+                                      seco_category, prim_category))
+                    que_3 = queue.Queue()
+                    t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                                check_for_market_place(a3, b3)),
+                                args=(que_3, temp_dict["userSearchTags"], 
+                                      market_place))
+                    t1.start()
+                    t2.start()
+                    t3.start()
+                    t1.join()
+                    t2.join()
+                    t3.join()
+                    skill_match, associated_tags = que_1.get()
+                    if (1 == skill_match):
+                        temp_dict["skillNameMatchFlag"] = "yes"
+                        tag_item = temp_dict["userSearchTags"]
+                        if (isinstance(tag_item, list)):
+                            tag_item_str = "".join(tag_item)
+                            temp_dict["skillName"] = tag_item_str
+                        else:  
+                            temp_dict["skillName"] = tag_item
+                    scm, pcm = que_2.get()
+                    if (0 != scm):
+                        temp_dict["secondaryCategoryFlag"] = "yes"
+                        temp_dict["secondaryCategory"] = scm
+                    if (0 != pcm):
+                        temp_dict["primaryCategoryFlag"] = "yes"
+                        temp_dict["primaryCategory"] = pcm
+                    market_place_flag = que_3.get()
+                    if (0 != market_place_flag):
+                        temp_dict["marketPlaceFlag"] = "yes"
+                        temp_dict["marketPlace"] = market_place_flag
+                        temp_dict["userSearchTags"] = "no"
+                two_words_input_flag = 1
+                break
+
+    ## example input: Oracle Learning
+    ## example input: Python Game            
+    ## hence no need to check for check_exact_skill_match, because it should
+    ## have done before before coming to this point
+    if (0 == two_words_input_flag):
+        print ("CHK -2c")
+        
+        tokens_str = " ".join(tokens)
+        #print ("tokens_str: [%s]" %tokens_str)
+        temp_dict["userSearchTags"] = "no"
+        temp_dict["didYouMean"] = "no"
+
+        que_1 = queue.Queue()
+        t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                 handle_nlp_extracted_phrase(a1, b1)), 
+                 args=(que_1, tokens_str.lower(), tags_2))
+        que_2 = queue.Queue()
+        t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                 did_you_mean_Arpan(a2, b2)), 
+                 args=(que_2, tokens_str.lower(), tags_2))
+
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        associated_tags = que_1.get()
+        if (0 != len(associated_tags)):  
+            temp_dict["userSearchTags"] = associated_tags
+        #print ("tags: ", temp_dict["userSearchTags"])
+        if ("no" == temp_dict["userSearchTags"]):
+            temp_dict["userSearchTags"] = tokens_str.lower().split(" ")
+        dym_val = que_2.get()
+        #print ("dym_val: [%s]" %dym_val)
+        if (None != dym_val):
+            temp_dict["didYouMean"] = string.capwords(dym_val)
+        else:
+            temp_dict["didYouMean"] = "no"
+            scm, pcm = check_for_category(tokens_str.lower(), 
+                           seco_category, prim_category)
+            if (0 != scm):
+                temp_dict["secondaryCategoryFlag"] = "yes"
+                temp_dict["secondaryCategory"] = scm
+            if (0 != pcm):
+                temp_dict["primaryCategoryFlag"] = "yes"
+                temp_dict["primaryCategory"] = pcm
+        temp_dict["phrase"] = tokens_str.lower()
+        temp_dict["activityNameMatchFlag"] = "no"
+        temp_dict["activityCodeMatchFlag"] = "no"
+        que_3 = queue.Queue()
+        t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                    check_exact_skill_match(a3, b3)),
+                    args=(que_3, "".join(temp_dict["userSearchTags"]), 
+                          all_items))
+        que_4 = queue.Queue()
+        t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                    check_exact_skill_code(a4, b4)),
+                    args=(que_4, "".join(temp_dict["userSearchTags"]), 
+                          all_items))
+        que_5 = queue.Queue()
+        t5 = Thread(target=lambda q5, a5, b5, c5: q5.put(
+                    check_for_category(a5, b5, c5)),
+                    args=(que_5, "".join(temp_dict["userSearchTags"]),
+                          seco_category, prim_category))
+        t3.start()
+        t4.start()
+        t5.start()
+        t3.join()
+        t4.join()
+        t5.join()
+        skill_match, skill_name_tags = que_3.get()
+        skill_code_match_flag, skill_code_tags = que_4.get()
+        if ((1 == skill_match) and (0 == skill_code_match_flag)):
+            temp_dict["skillNameMatchFlag"] = "yes"
+            temp_dict["skillName"] = temp_dict["userSearchTags"]
+            temp_dict["skillCodeMatchFlag"] = "no"
+        if ((1 == skill_code_match_flag) and (0 == skill_match)):
+            temp_dict["skillNameMatchFlag"] = "no"  
+            temp_dict["skillCodeMatchFlag"] = "yes"
+            temp_dict["skillCode"] = temp_dict["userSearchTags"]
+        scm, pcm = que_5.get()
+        if (0 != scm):
+            temp_dict["secondaryCategoryFlag"] = "yes"
+            temp_dict["secondaryCategory"] = scm
+        if (0 != pcm):
+            temp_dict["primaryCategoryFlag"] = "yes"
+            temp_dict["primaryCategory"] = pcm
+
+        if ((0 == skill_match) or (0 == skill_code_match_flag)):
+            tag_list = temp_dict["userSearchTags"]
+            for i in range (0, len(tag_list)):
+                skill_match_2, skill_name_tags_2 = check_exact_skill_match(
+                    tag_list[i], all_items)
+                if (1 == skill_match_2):
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = skill_name_tags_2
+                    temp_dict["userSearchTags"] = skill_name_tags_2
+                    break
+        two_words_input_flag = 1
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_whole_match_activity_label_or_lo_type(
+    tokens_str, 
+    temp_dict,
+    all_activity_labels_no_dup,
+    all_keywords):    
+    print ("Function: process_whole_match_activity_label_or_lo_type")
+    #print ("tokens_str: [%s]" %tokens_str)
+    whole_match_activity_label_or_lo_found = 0
+    activity_label_found = 0
+    lo_found = 0
+    
+    ## check for activity label
+    if (0 == whole_match_activity_label_or_lo_found):
+        for i in range (0, len(all_activity_labels_no_dup)):
+            if ((tokens_str.lower() == all_activity_labels_no_dup[i].lower()) or
+                (tokens_str[0:-1].lower() == all_activity_labels_no_dup[i].
+                                             lower())):
+                print("Full Match - ActivityLabel")
+                temp_dict["activityLabelFlag"] = "yes"
+                temp_dict["activityLabel"] = all_activity_labels_no_dup[i].lower()
+                activity_label_found = 1
+                break
+
+    ## check for lo_type
+    if (0 == whole_match_activity_label_or_lo_found):
+        for j in range (0, len(all_keywords)):
+            if ((tokens_str.lower() == all_keywords[j].lower()) or
+                (tokens_str[0:-1].lower() == all_keywords[j].lower())):
+                print("Full Match - LO type")
+                temp_dict["learningObjectFlag"] = "yes"
+                temp_dict["learningObject"] = all_keywords[j].lower()
+                lo_found = 1
+                break
+
+    if ((1 == activity_label_found) or (1 == lo_found)):     
+        whole_match_activity_label_or_lo_found = 1
+    return whole_match_activity_label_or_lo_found
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_input_having_market_place(
+    sample_3, 
+    temp_dict, 
+    market_place,
+    proficiency_level,
+    vowel_list):
+
+    print ("Function: [process_input_having_market_place]")
+    #print (temp_dict)
+    #print (sample_3)
+    chk_flag = 0
+    for i in range (0, len(market_place)): 
+        if (market_place[i].lower() in sample_3):
+            print ("Found: Input having Market Place")
+            sample_3 = sample_3.replace(market_place[i].lower(), "")
+            temp_dict["marketPlaceFlag"] = "yes"
+            temp_dict["marketPlace"] = market_place[i]
+            chk_flag = 1  
+            break
+    if (1 == chk_flag):
+        if (temp_dict["flagProficiency"] == "no"):
+            pl_found_flag = 0
+            for loop_cnt in range (0, len(proficiency_level)):
+                if (proficiency_level[loop_cnt].lower() in sample_3):
+                    sample_3 = sample_3.replace (proficiency_level[loop_cnt].
+                               lower(), "")
+                    temp_dict["flagProficiency"] = proficiency_level[loop_cnt].lower()
+                    pl_found_flag = 1
+                    break
+            if (0 == pl_found_flag):
+                temp_dict["flagProficiency"] = "no"
+
+        np_extractor_object = Noun_Phrase_Extraction_Arpan(sample_3)
+        np_result = np_extractor_object.extract()
+        temp_str = " ".join(np_result)
+        #temp_str_tokens = word_tokenize(temp_str)
+        temp_str_tokens = temp_str.split(" ")
+        np_result_2 = [item for item in temp_str_tokens if item not in 
+                       vowel_list]
+        temp_str_2 = " ".join(np_result_2)
+        temp_dict["phrase"] = temp_str_2
+
+    return chk_flag, sample_3
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_input_having_delivery_mode(
+    sample_2, 
+    temp_dict, 
+    delivery_mode,
+    proficiency_level,
+    vowel_list):
+
+    print ("Function: [process_input_having_delivery_mode]")
+    chk_flag = 0
+    for i in range (0, len(delivery_mode)): 
+        if (delivery_mode[i].lower() in sample_2):
+            print ("Found: Input having Delivery Mode")
+            sample_2 = sample_2.replace(delivery_mode[i].lower(), "")
+            temp_dict["deliveryModeFlag"] = "yes"
+            temp_dict["deliveryMode"] = delivery_mode[i].lower()
+            chk_flag = 1  
+            break
+    if (1 == chk_flag):
+        if (temp_dict["flagProficiency"] == "no"):
+            pl_found_flag = 0
+            for loop_cnt in range (0, len(proficiency_level)):
+                if (proficiency_level[loop_cnt].lower() in sample_2):
+                    sample_2 = sample_2.replace (proficiency_level[loop_cnt].
+                               lower(), "")
+                    temp_dict["flagProficiency"] = "yes"
+                    temp_dict["userProficiency_search"] = proficiency_level[loop_cnt].lower()
+                    pl_found_flag = 1
+                    break
+            if (0 == pl_found_flag):
+                temp_dict["flagProficiency"] = "no"
+
+        np_extractor_object = Noun_Phrase_Extraction_Arpan(sample_2)
+        np_result = np_extractor_object.extract()
+        temp_str = " ".join(np_result)
+        #temp_str_tokens = word_tokenize(temp_str)
+        temp_str_tokens = temp_str.split(" ")
+        np_result_2 = [item for item in temp_str_tokens if item not in 
+                       vowel_list]
+        temp_str_2 = " ".join(np_result_2)
+        temp_dict["phrase"] = temp_str_2
+
+    return chk_flag, sample_2
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def process_input_having_keywords(
+    sample_1, 
+    temp_dict,
+    all_activity_labels_no_dup,
+    all_keywords,
+    seco_category, 
+    prim_category,
+    proficiency_level,
+    vowel_list):
+
+    print ("CHK -3a")   
+    chk_flag_1 = 0
+    chk_flag_2 = 0
+    chk_flag = 0
+
+    local_stopwords = ["availability"]
+    if (local_stopwords[0] in sample_1):
+        sample_1 = sample_1.replace(local_stopwords[0], "")
+    sample_2 = copy.copy(sample_1)
+    #print ("sample_2: [%s]" %sample_2)
+    sample_1_tokens = sample_1.split()
+    #print ("sample_1_tokens: ", sample_1_tokens)
+
+    activity_label_list = []
+    if (0 == chk_flag_1):
+        for i in range (0, len(all_activity_labels_no_dup)):
+            plural_str = all_activity_labels_no_dup[i].lower()+"s"
+            if (plural_str in sample_1):
+                print ("CHK -3aa-activity_label")
+                sample_1 = sample_1.replace(plural_str, "")
+                chk_flag_1 = 1
+            if (all_activity_labels_no_dup[i].lower() in sample_1):
+                print ("CHK -3ab-activity_label")
+                sample_1 = sample_1.replace(all_activity_labels_no_dup[i].
+                           lower(), "")
+                chk_flag_1 = 1
+            if (1 == chk_flag_1):
+                temp_dict["activityLabelFlag"] = "yes"
+                activity_label_list.append(all_activity_labels_no_dup[i].lower())
+                chk_flag_1 = 0
+    #print (activity_label_list)
+    if (1 == len(activity_label_list)):
+        activity_label_list_str = "".join(activity_label_list)
+        temp_dict["activityLabel"] = activity_label_list_str
+    else:
+        activity_label_list_str = ", ".join(activity_label_list)
+        temp_dict["activityLabel"] = activity_label_list_str
+    #print (sample_1)
+
+    lo_type_list = []
+    if (0 == chk_flag_2):
+        for j in range (0, len(all_keywords)):
+            plural_str = all_keywords[j].lower()+"s"
+            if (plural_str in sample_1):
+                print ("CHK -3aa-lo_type_1")
+                sample_1 = sample_1.replace(plural_str, "")
+                chk_flag_2 = 1
+            if (all_keywords[j].lower() in sample_1):
+                print ("CHK -3ab-lo_type_1")
+                sample_1 = sample_1.replace(all_keywords[j].lower(), "")
+                chk_flag_2 = 1
+            if (1 == chk_flag_2):
+                temp_dict["learningObjectFlag"] = "yes"
+                lo_type_list.append(all_keywords[j].lower())
+                chk_flag_2 = 0
+    #temp_dict["learningObject"] = lo_type_list
+
+    if (("no" == temp_dict["learningObjectFlag"]) or \
+       ("instructor led training" in activity_label_list)):
+        sample_2 = sample_2.replace("instructor led training", "")
+
+        for j in range (0, len(all_keywords)):
+            plural_str = all_keywords[j].lower()+"s"
+            if (plural_str in sample_2):
+                print ("CHK -3aa-lo_type_2")
+                sample_1 = sample_1.replace(plural_str, "")
+                chk_flag_2 = 1
+            if (all_keywords[j].lower() in sample_2):
+                print ("CHK -3ab-lo_type_2")
+                sample_1 = sample_1.replace(all_keywords[j].lower(), "")
+                chk_flag_2 = 1
+            if (1 == chk_flag_2):
+                temp_dict["learningObjectFlag"] = "yes"
+                lo_type_list.append(all_keywords[j].lower())
+                chk_flag_2 = 0
+    #temp_dict["learningObject"] = lo_type_list
+    if (1 == len(lo_type_list)):
+        lo_type_list_str = "".join(lo_type_list)
+        temp_dict["learningObject"] = lo_type_list_str
+    else:
+        lo_type_list_str = ", ".join(lo_type_list)
+        temp_dict["learningObject"] = lo_type_list_str
+                
+    if (("yes" == temp_dict["activityLabel"]) or 
+        ("yes" == temp_dict["learningObjectFlag"])):
+        chk_flag = 1
+        #print ("sample_1: [%s]" %sample_1)
+        pl_found_flag = 0
+        for loop_cnt in range (0, len(proficiency_level)):
+            if (proficiency_level[loop_cnt].lower() in sample_1):
+                sample_1 = sample_1.replace (proficiency_level[loop_cnt].
+                               lower(), "")
+                temp_dict["flagProficiency"] = "yes"
+                temp_dict["userProficiency_search"] = proficiency_level[loop_cnt].lower()
+                pl_found_flag = 1
+                print ("PL is found")
+                break
+        if (0 == pl_found_flag):
+            print ("PL is not found")
+            temp_dict["flagProficiency"] = "no"
+                
+        #print ("sample_1 becomes: [%s]" %sample_1.strip())
+        scm, pcm = check_for_category(sample_1.strip(), 
+                       seco_category, prim_category)
+        if (0 != scm):
+            temp_dict["secondaryCategoryFlag"] = "yes"
+            temp_dict["secondaryCategory"] = scm
+        if (0 != pcm):
+            temp_dict["primaryCategoryFlag"] = "yes"
+            temp_dict["primaryCategory"] = pcm
+      
+        if ((0 == scm) and (0 == pcm)):
+            sample_1_tokens = sample_1.split()
+            #print (sample_1_tokens)
+            sample_1_tokens_length = len(sample_1_tokens)
+            
+            for j in range (0, len(seco_category)):
+                temp_item = seco_category[j].lower()
+                temp_item_tokens = temp_item.split()
+                first_seco_match = 0
+                for lc_2 in range (0, len(sample_1_tokens)):
+                    if (sample_1_tokens[lc_2] == temp_item_tokens[0]):
+                        first_seco_match = 1
+                        break
+                if ((1 == first_seco_match) and (temp_item in sample_1)):
+                    temp_dict["secondaryCategory"] = temp_item
+                    break
+
+            for k in range (0, len(prim_category)):
+                temp_item = prim_category[k].lower()
+                temp_item_tokens = temp_item.split()
+                first_prim_match = 0
+                for lc_3 in range (0, len(sample_1_tokens)):
+                    if (sample_1_tokens[lc_3] == temp_item_tokens[0]):
+                        first_prim_match = 1
+                        break
+                if ((1 == first_prim_match) and (temp_item in sample_1)):
+                    temp_dict["primaryCategory"] = temp_item
+                    break
+ 
+        np_extractor_object = Noun_Phrase_Extraction_Arpan(sample_1)
+        np_result = np_extractor_object.extract()
+        #print ("np_result becomes: ", np_result)
+        temp_str = " ".join(np_result)
+        #temp_str_tokens = word_tokenize(temp_str)
+        temp_str_tokens = temp_str.split(" ")
+        np_result_2 = [item for item in temp_str_tokens if item not in 
+                           vowel_list]
+        temp_str_2 = " ".join(np_result_2)
+        temp_dict["phrase"] = temp_str_2
+        #print ("temp_dict['phrase']: ", temp_dict["phrase"])
+        #search_input.append(temp_dict)
+       
+    #print ("Final sample_1: ", sample_1) 
+    #print (temp_dict)
+    return chk_flag, sample_1
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_exact_title_match(input_query, all_items, tags):
+
+    user_input = input_query.lower()
+    print ("User Input: [%s]" %user_input)
+
+    req_tags = 0
+    title_match_flag = 0
+    
+    titles = list(map(itemgetter("ActivityName"), all_items)) 
+    #print (len(titles))
+    
+    titles_2 = []
+    for i in range (0, len(titles)):
+        temp_item = titles[i]
+        if (isinstance(temp_item, str)):
+            temp_item = temp_item.lower()
+            titles_2.append(temp_item)
+        if (isinstance(temp_item, float)):
+            temp_item = int(temp_item)
+            titles_2.append(str(temp_item))        
+    #print (len(titles_2))
+    #print (titles_2)
+   
+    for i in range (0, len(titles_2)):
+        if ((input_query == titles_2[i]) or (user_input == titles_2[i])):
+            title_match_flag = 1
+            req_tags = tags[i].lower().split(", ")
+        
+    return title_match_flag, req_tags         
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_exact_title_code(input_query, all_items):
+    req_tags = 0
+    title_code_match = 0
+    title_codes = list(map(itemgetter("ActivityCode"), all_items))
+    #print (len(title_codes))
+
+    title_codes_2 = []
+    for i in range (0, len(title_codes)):
+        temp_item = title_codes[i]
+        if (isinstance(temp_item, str)):
+            temp_item = temp_item.lower()
+            title_codes_2.append(temp_item)
+        if (isinstance(temp_item, float)):
+            temp_item = int(temp_item)
+            title_codes_2.append(str(temp_item))
+    #print (len(title_codes_2))
+    #print ("Retrieved title_codes_2: ", title_codes_2)  
+
+    if (isinstance(input_query, str)):
+        temp_item = input_query.lower()
+    #print ("temp_item: [%s]" %temp_item)
+
+    for i in range (0, len(title_codes_2)):
+        if (temp_item == title_codes_2[i]):
+            title_code_match = 1
+            req_tags = tags[i].lower().split(", ")
+
+    #print (req_tags)
+    return title_code_match, req_tags         
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_for_skill_match(query_str, all_items):
+    print ("query_str in check_for_skill_match: [%s]" %query_str)
+    query_str_list = query_str.split(" ")
+    print (query_str_list)
+    req_tags = 0
+    skill_match_flag = 0
+
+    skills = list(map(itemgetter("SkillName"), all_items)) 
+    #print (len(skills))
+
+    skills_2 = []
+    for i in range (0, len(skills)):
+        if ("|" in skills[i]):
+            #print (skills[i])
+            item_list = ''.join(skills[i]).split(' | ')
+            #print (item_list)
+            item_list_2 = []
+            for j in range (0, len(item_list)):
+                temp_item_1 = item_list[j]
+                if (isinstance(temp_item_1, str)):
+                    temp_item_1 = temp_item_1.lower()
+                    item_list_2.append(temp_item_1)
+                if (isinstance(temp_item_1, float)):
+                    temp_item_1 = int(temp_item_1)
+                    item_list_2.append(str(temp_item_1))
+            skills_2.append(item_list_2)
+        else:
+            temp_item_2 = skills[i]
+            if (isinstance(temp_item_2, str)):
+                temp_item_2 = temp_item_2.lower()
+                skills_2.append(temp_item_2)
+            if (isinstance(temp_item_2, float)):
+                temp_item = int(temp_item_2)
+                skills_2.append(str(temp_item_2))
+
+    for i in range (0, len(skills_2)):
+        if (isinstance(skills_2[i], list)):
+            for j in range (0, len(skills_2[i])):
+                single_item = skills_2[i][j]
+                for k in range (0, len(query_str_list)):
+                    if (single_item == query_str_list[k]):
+                        req_tags = skills_2[i][j]
+                        #print ("req_tags (1): ", req_tags)
+                        skill_match_flag = 1
+                        break
+                if (1 == skill_match_flag):
+                    break
+        else:
+            if (skills_2[i] != ""):
+                for k in range (0, len(query_str_list)):
+                    if (skills_2[i] == query_str_list[k]):
+                        req_tags = skills_2[i]
+                        #print ("req_tags (2): ", req_tags)
+                        skill_match_flag = 1
+                        break
+    return skill_match_flag, req_tags
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_exact_skill_match(input_query, all_items):
+    print ("input_query in check_exact_skill_match: [%s]" %input_query)
+    if (isinstance(input_query, list)):
+        input_query = "".join(input_query)
+    user_input = input_query.lower()
+    req_tags = 0
+    skill_match_flag = 0
+
+    skills = list(map(itemgetter("SkillName"), all_items)) 
+    #print (len(skills))
+
+    skills_2 = []
+    for i in range (0, len(skills)):
+        if ("|" in skills[i]):
+            #print (skills[i])
+            item_list = ''.join(skills[i]).split(' | ')
+            #print (item_list)
+            item_list_2 = []
+            for j in range (0, len(item_list)):
+                temp_item_1 = item_list[j]
+                if (isinstance(temp_item_1, str)):
+                    temp_item_1 = temp_item_1.lower()
+                    item_list_2.append(temp_item_1)
+                if (isinstance(temp_item_1, float)):
+                    temp_item_1 = int(temp_item_1)
+                    item_list_2.append(str(temp_item_1))
+            skills_2.append(item_list_2)
+        else:
+            temp_item_2 = skills[i]
+            if (isinstance(temp_item_2, str)):
+                temp_item_2 = temp_item_2.lower()
+                skills_2.append(temp_item_2)
+            if (isinstance(temp_item_2, float)):
+                temp_item = int(temp_item_2)
+                skills_2.append(str(temp_item_2))
+
+    for i in range (0, len(skills_2)):
+        if (1 == len(skills_2[i]) and (user_input == skills_2[i])):
+            skill_match_flag = 1
+            break
+        else:
+            for j in range (0, len(skills_2[i])):
+                if (user_input == skills_2[i][j]):
+                    skill_match_flag = 1
+                    break
+            if (1 == skill_match_flag):
+                break    
+
+    if (1 == skill_match_flag):
+        req_tags = user_input    
+    return skill_match_flag, req_tags
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_exact_skill_code(input_query, all_items):
+    input_query_lwr = None
+    if (isinstance(input_query, str)):
+        input_query_lwr = input_query.lower()
+    #print ("input_query_lwr for exact skill_code: [%s]" %input_query_lwr)
+
+    req_tags = 0
+    skill_code_match = 0
+    skill_codes = list(map(itemgetter("SkillCode"), all_items))
+
+    skill_codes_2 = []
+    for i in range (0, len(skill_codes)):
+        if ((None != skill_codes[i]) and ("|" in skill_codes[i])):
+            #print (skills_codes[i])
+            item_list = ''.join(skill_codes[i]).split(' | ')
+            #print (item_list)
+            item_list_2 = []
+            for j in range (0, len(item_list)):
+                temp_item_1 = item_list[j]
+                if (isinstance(temp_item_1, str)):
+                    temp_item_1 = temp_item_1.lower()
+                    item_list_2.append(temp_item_1)
+                if (isinstance(temp_item_1, float)):
+                    temp_item_1 = int(temp_item_1)
+                    item_list_2.append(str(temp_item_1))
+            skill_codes_2.append(item_list_2)    
+        else:
+            if (None != skill_codes[i]): 
+                temp_item_2 = skill_codes[i]
+                if (isinstance(temp_item_2, str)):
+                    temp_item_2 = temp_item_2.lower()
+                    skill_codes_2.append(temp_item_2)
+                if (isinstance(temp_item_2, float)):
+                    temp_item_2 = int(temp_item_2)
+                    skill_codes_2.append(str(temp_item_2))
+    #print (skill_codes_2)  
+
+    for i in range (0, len(skill_codes_2)):
+        if ((isinstance(skill_codes_2[i], str)) and 
+            (input_query_lwr == skill_codes_2[i])):
+            req_item = [d for d in all_items if d["SkillCode"] == input_query_lwr]
+            skill_code_match = 1
+            #print ("req_item: ", req_item)
+            #print (len(req_item))
+            req_tags = list(map(itemgetter("SkillName"), req_item))
+            req_tags_2 = []
+            for i in range (0, len(req_tags)):
+                split_item = req_tags[i].lower().split(" ")
+                for j in range (0, len(split_item)):
+                    req_tags_2.append(split_item[j])
+            return skill_code_match, req_tags_2
+        if ((0 == skill_code_match) and (isinstance(skill_codes_2[i], list))):
+            for j in range (0, len(skill_codes_2[i])):
+                if (input_query_lwr == skill_codes_2[i][j]):
+                    #print ("Skill Code Found")
+                    skill_code_match = 1
+                    break
+        if (1 == skill_code_match):
+            for lc_1 in range (0, len(all_items)):
+                if (input_query_lwr in all_items[lc_1]["SkillCode"]):
+                    #print ("req_item has been found")
+                    req_item = all_items[lc_1]
+                    #print (req_item["skillName"])
+                    req_tags = ''.join(req_item["SkillName"]).split(' | ')
+                    req_tags = req_tags[j].lower().split(" ")
+                    #print ("req_tags: ", req_tags)
+                    return skill_code_match, req_tags
+
+    ## Default return
+    return skill_code_match, req_tags 
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_title_code(phrase_tokens, all_items):
+    #print ("function: [check_title_code]")
+    #print ("phrase_tokens: [%s]" %phrase_tokens)
+    title_code_match = 0 
+    req_tags = 0
+    temp_item = 0
+
+    title_codes = list(map(itemgetter("ActivityCode"), all_items))
+   
+    title_codes_2 = []
+    for i in range (0, len(title_codes)):
+        temp_item = title_codes[i]
+        if (isinstance(temp_item, str)):
+            temp_item = temp_item.lower()
+            title_codes_2.append(temp_item)
+        if (isinstance(temp_item, float)):
+            temp_item = int(temp_item)
+            title_codes_2.append(str(temp_item))
+    #print (len(title_codes_2))
+    #print ("Retrieved title_codes_2: ", title_codes_2)
+
+    for i in range (0, len(phrase_tokens)):
+        temp_item = phrase_tokens[i]
+        if (isinstance(temp_item, float)):
+            temp_item = int(temp_item)
+        #print ("temp_item: [%s]" %temp_item)
+        for j in range (0, len(title_codes_2)):
+            if (temp_item == title_codes_2[j]): 
+                title_code_match = 1
+                req_tags = tags[j].lower().split(", ")
+    #print ("temp_item: [%s]" %temp_item)
+    return title_code_match, temp_item, req_tags
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def check_skill_code(phrase_tokens, all_items):
+    skill_code_match = 0 
+    temp_item = 0
+    req_tags = 0
+    skill_codes = list(map(itemgetter("SkillCode"), all_items))
+
+    skill_codes_2 = []
+    for i in range (0, len(skill_codes)):
+        if ((None != skill_codes[i]) and ("|" in skill_codes[i])):
+            #print (skills_codes[i])
+            item_list = ''.join(skill_codes[i]).split(' | ')
+            #print (item_list)
+            item_list_2 = []
+            for j in range (0, len(item_list)):
+                temp_item_1 = item_list[j]
+                if (isinstance(temp_item_1, str)):
+                    temp_item_1 = temp_item_1.lower()
+                    item_list_2.append(temp_item_1)
+                if (isinstance(temp_item_1, float)):
+                    temp_item_1 = int(temp_item_1)
+                    item_list_2.append(str(temp_item_1))
+            skill_codes_2.append(item_list_2)
+        else:
+            if (None != skill_codes[i]):
+                temp_item_2 = skill_codes[i]
+                if (isinstance(temp_item_2, str)):
+                    temp_item_2 = temp_item_2.lower()
+                    skill_codes_2.append(temp_item_2)
+                if (isinstance(temp_item_2, float)):
+                    temp_item_2 = int(temp_item_2)
+                    skill_codes_2.append(str(temp_item_2))
+    #print (skill_codes_2)
+
+    for i in range (0, len(phrase_tokens)):
+        temp_item = phrase_tokens[i]
+        #print ("temp_item=> [%s]" %temp_item)
+        for j in range (0, len(skill_codes_2)):
+            if ((isinstance(skill_codes_2[j], str)) and 
+                (temp_item == skill_codes_2[j])):
+                req_item = [d for d in all_items if d["SkillCode"] == temp_item]
+                skill_code_match = 1
+                #print ("req_item: ", req_item)
+                #print (len(req_item))
+                req_tags = list(map(itemgetter("SkillName"), req_item))
+                req_tags_2 = []
+                for i in range (0, len(req_tags)):
+                    split_item = req_tags[i].lower().split(" ")
+                    for j in range (0, len(split_item)):
+                        req_tags_2.append(split_item[j]) 
+                return skill_code_match, temp_item, req_tags_2
+            if ((0 == skill_code_match) and (isinstance(skill_codes_2[j], list))):
+                for k in range (0, len(skill_codes_2[j])):
+                    if (temp_item == skill_codes_2[j][k]):
+                        #print ("Skill Code Found")
+                        skill_code_match = 1
+                        break
+            if (1 == skill_code_match):
+                for lc_1 in range (0, len(all_items)):
+                    if (temp_item in all_items[lc_1]["SkillCode"]):
+                        #print ("req_item has been found")
+                        req_item = all_items[lc_1]
+                        req_tags = ''.join(req_item["SkillName"]).split(' | ')
+                        req_tags = req_tags[k].lower().split(" ")
+                        return skill_code_match, temp_item, req_tags
+
+    #print ("skill_code_match: [%s]" %skill_code_match)
+    #print ("req_tags: ", req_tags)
+
+    ## default return
+    return skill_code_match, temp_item, req_tags
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+## Starting Function
+def process_ui_output(
+    ui_output, 
+    all_activity_labels_no_dup, 
+    all_keywords,
+    all_items,
+    tags, 
+    tags_2, 
+    prim_category, 
+    seco_category, 
+    delivery_mode, 
+    market_place,
+    vowel_list, 
+    proficiency_level):
+
+    input_query = ui_output["query_string"]
+    print ("input_query = [%s]" %input_query)
+
+    temp_dict = {}
+    temp_dict["secondaryCategoryFlag"] = "no"
+    temp_dict["primaryCategoryFlag"] = "no"
+
+    ##---- check for exact title name -----##
+    title_match = 0
+    title_name_tags = 0
+
+    ##---- check for exact title code -----##
+    title_code_match_flag = 0
+    title_code_tags = 0 
+
+    ##---- check for exact skill name -----##
+    skill_match = 0
+    skill_name_tags = 0
+
+    ##---- check for exact skill code -----##        
+    skill_code_match_flag = 0
+    skill_code_tags = 0
+
+    que_1 = queue.Queue()
+    t1 = Thread(target=lambda q1, a1, b1, c1: q1.put(
+                check_exact_title_match(a1, b1, c1)),
+                args=(que_1, input_query, all_items, tags)) 
+    que_2 = queue.Queue()
+    t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                check_exact_title_code(a2, b2)),
+                args=(que_2, input_query, all_items))
+    que_3 = queue.Queue()
+    t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                check_exact_skill_match(a3, b3)),
+                args=(que_3, input_query, all_items))
+    que_4 = queue.Queue()
+    t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                check_exact_skill_code(a4, b4)),
+                args=(que_4, input_query, all_items))
+    que_5 = queue.Queue()
+    t5 = Thread(target=lambda q5, a5, b5, c5: q5.put(
+                check_for_category(a5, b5, c5)),
+                args=(que_5, input_query, seco_category, prim_category))
+    que_6 = queue.Queue()
+    t6 = Thread(target=lambda q6, a6, b6: q6.put(
+                check_for_market_place(a6, b6)),
+                args=(que_6, input_query, market_place))
+
+    t1.start()
+    t2.start()
+    t3.start()
+    t4.start()
+    t5.start()
+    t6.start()
+    t1.join()
+    t2.join()
+    t3.join()
+    t4.join()
+    t5.join()
+    t6.join()
+
+    scm, pcm = que_5.get()
+    if (0 != scm):
+        temp_dict["secondaryCategoryFlag"] = "yes"
+        temp_dict["secondaryCategory"] = scm
+    if (0 != pcm):
+        temp_dict["primaryCategoryFlag"] = "yes"
+        temp_dict["primaryCategory"] = pcm
+
+    title_match, title_name_tags = que_1.get()
+    title_code_match_flag, title_code_tags = que_2.get()
+    skill_match, skill_name_tags = que_3.get()
+    skill_code_match_flag, skill_code_tags = que_4.get()
+
+    if ((1 == title_match) and (0 == title_code_match_flag) and 
+        (0 == skill_code_match_flag)):   
+        temp_dict["activityNameMatchFlag"] = "yes"
+        temp_dict["activityName"] = input_query
+        temp_dict["activityCodeMatchFlag"] = "no"
+        temp_dict["skillCodeMatchFlag"] = "no"
+        temp_dict["flagProficiency"] = "no"
+        temp_dict["didYouMean"] = "no"
+        temp_dict["learningObjectFlag"] = "no"
+        temp_dict["activityLabelFlag"] = "no"
+        if (1 == skill_match):
+            temp_dict["skillNameMatchFlag"] = "yes"
+            temp_dict["skillName"] = input_query.lower()
+            temp_dict["userSearchTags"] = skill_name_tags.split(" ")
+        else:
+            print ("Title name found without skill_name")
+            temp_dict["skillNameMatchFlag"] = "no"
+            temp_dict["userSearchTags"] = title_name_tags
+            print (temp_dict["userSearchTags"])
+        return temp_dict
+
+    if ((1 == title_code_match_flag) and (0 == title_match) and
+        (0 == skill_code_match_flag)):
+        temp_dict["activityNameMatchFlag"] = "no"
+        temp_dict["activityCodeMatchFlag"] = "yes"
+        temp_dict["activityCode"] = input_query
+        temp_dict["skillCodeMatchFlag"] = "no"
+        temp_dict["flagProficiency"] = "no"
+        temp_dict["didYouMean"] = "no"
+        temp_dict["learningObjectFlag"] = "no"
+        temp_dict["activityLabelFlag"] = "no"
+        if (1 == skill_match):
+            temp_dict["skillNameMatchFlag"] = "yes"
+            temp_dict["skillName"] = input_query.lower()
+            temp_dict["userSearchTags"] = skill_name_tags.split(" ")
+        else:
+            print ("Title code found without skill_name")
+            temp_dict["skillNameMatchFlag"] = "no"
+            temp_dict["userSearchTags"] = title_code_tags
+        return temp_dict
+
+    if ((1 == skill_match) and (0 == skill_code_match_flag) and 
+        (0 == title_match) and (0 == title_code_match_flag)):
+        temp_dict["activityNameMatchFlag"] = "no"
+        temp_dict["activityCodeMatchFlag"] = "no"
+        temp_dict["skillNameMatchFlag"] = "yes"
+        temp_dict["skillName"] = input_query.lower()
+        temp_dict["skillCodeMatchFlag"] = "no"
+        temp_dict["flagProficiency"] = "no"
+        temp_dict["didYouMean"] = "no"
+        temp_dict["learningObjectFlag"] = "no"
+        temp_dict["activityLabelFlag"] = "no"
+        temp_dict["userSearchTags"] = skill_name_tags.split(" ")
+        return temp_dict
+
+    if ((1 == skill_code_match_flag) and (0 == skill_match) and
+        (0 == title_match) and (0 == title_code_match_flag)):
+        temp_dict["activityNameMatchFlag"] = "no"
+        temp_dict["activityCodeMatchFlag"] = "no"
+        temp_dict["skillNameMatchFlag"] = "no"  
+        temp_dict["skillCodeMatchFlag"] = "yes"
+        temp_dict["skillCode"] = input_query
+        temp_dict["flagProficiency"] = "no"
+        temp_dict["didYouMean"] = "no"
+        temp_dict["learningObjectFlag"] = "no"
+        temp_dict["activityLabelFlag"] = "no"
+        temp_dict["userSearchTags"] = skill_code_tags
+        return temp_dict
+
+    market_place_flag = que_6.get()
+    if (0 != market_place_flag):
+        temp_dict["activityNameMatchFlag"] = "no"
+        temp_dict["activityCodeMatchFlag"] = "no"
+        temp_dict["skillNameMatchFlag"] = "no"
+        temp_dict["skillCodeMatchFlag"] = "no"
+        temp_dict["flagProficiency"] = "no"
+        temp_dict["didYouMean"] = "no"
+        temp_dict["learningObjectFlag"] = "no"
+        temp_dict["activityLabelFlag"] = "no"
+        temp_dict["marketPlaceFlag"] = "yes"
+        temp_dict["marketPlace"] = market_place_flag
+        temp_dict["userSearchTags"] = market_place_flag
+        return temp_dict
+    ##-------------------------------------##
+    
+    ##-------------------------------------##
+    temp_dict["flagProficiency"] = "no"
+    temp_dict["phrase"] = "no"
+    temp_dict["userSearchTags"] = "no"
+    temp_dict["didYouMean"] = "no"
+    temp_dict["activityNameMatchFlag"] = "no"
+    temp_dict["activityCodeMatchFlag"] = "no"
+    temp_dict["skillNameMatchFlag"] = "no"
+    temp_dict["skillCodeMatchFlag"] = "no"
+    temp_dict["learningObjectFlag"] = "no"
+    temp_dict["activityLabelFlag"] = "no"
+    temp_dict["deliveryModeFlag"] = "no"
+    temp_dict["secondaryCategoryFlag"] = "no"
+    temp_dict["primaryCategoryFlag"] = "no"
+    
+    ##---- 100% matching of the Activity Label or Lo Type or Delivery Mode 
+    ##---- nothing else in the input ----##
+    activity_label_or_lo_type_flag = 0
+    activity_label_or_lo_type_flag = \
+        process_whole_match_activity_label_or_lo_type(
+            input_query, 
+            temp_dict, 
+            all_activity_labels_no_dup, 
+            all_keywords)
+    delivery_mode_found = 0
+    delivery_mode_found = check_for_delivery_mode(
+                              input_query, 
+                              temp_dict, 
+                              delivery_mode)
+    if (1 == activity_label_or_lo_type_flag) or (1 == delivery_mode_found):
+        return (temp_dict)
+    ##------------------------------------##
+
+    ##------------------------------------##
+    associated_tags = "no"
+    temp_dict["userSearchTags"] = associated_tags
+    sample = input_query
+    #print("input = ", sample)
+    
+    tokens = sample.split(" ")
+    #print (tokens)
+    #print ("Length: ", len(tokens))
+    
+    tokens_str = " ".join(tokens)
+    #print ("tokens_str: [%s]" %tokens_str)
+
+    
+    ##---- input has only single word ----##
+    if (1 == len(tokens)):
+        print ("CHK -1")
+        temp_dict_processed = process_single_word_input(
+                tokens, 
+                temp_dict, 
+                tags_2, 
+                proficiency_level)
+        return (temp_dict_processed)
+    ##------------------------------------##
+
+    ##---- input has only two words ------##     
+    if (2 == len(tokens)):
+        #print(tokens)
+        print ("CHK -2")
+        process_two_words_input(
+            tokens, 
+            temp_dict, 
+            seco_category, 
+            prim_category,
+            all_activity_labels_no_dup, 
+            delivery_mode, 
+            market_place, 
+            all_keywords, 
+            tags_2, 
+            all_items, 
+            proficiency_level)
+        return (temp_dict)
+    ##-------------------------------------##
+        
+    ##---- input has more than 2 words ----##
+    else:
+        print ("CHK -3")
+        input_having_keywords_flag = 0
+        sample_1 = sample.lower()
+        
+        input_having_keywords_flag, sample_1 = process_input_having_keywords(
+                sample_1, 
+                temp_dict, 
+                all_activity_labels_no_dup, 
+                all_keywords,
+                seco_category, 
+                prim_category, 
+                proficiency_level, 
+                vowel_list)
+        print ("input_having_keywords_flag: [%s]" %input_having_keywords_flag)
+
+        input_having_dm_flag = 0
+        input_having_dm_flag, sample_1 = process_input_having_delivery_mode(
+                sample_1, 
+                temp_dict, 
+                delivery_mode, 
+                proficiency_level,
+                vowel_list)
+        print ("input_having_dm_flag: [%s]" %input_having_dm_flag)
+
+        input_having_market_place_flag = 0
+        input_having_market_place_flag, \
+            sample_1 = process_input_having_market_place(
+                           sample_1, 
+                           temp_dict,
+                           market_place, 
+                           proficiency_level, 
+                           vowel_list)
+        print ("input_having_market_place_flag: [%s]" \
+                   %input_having_market_place_flag)
+        #print (temp_dict) 
+        
+        ##--------------- SPECIAL CASES: Arbitrary User Input -------------##
+        ##---- Example: Natural Language Processing -----------------------##
+        ##---- Example: I need project training on Internet of Things -----##
+        ##---- Example: Need help on Long Short Term Memory ---------------##
+        if ((0 == input_having_keywords_flag) and (0 == input_having_dm_flag) 
+             and (0 == input_having_market_place_flag)):        
+            print ("CHK -3bb")
+            pl_found_flag = 0              
+           
+            for loop_cnt in range (0, len(proficiency_level)):
+                if (proficiency_level[loop_cnt].lower() in sample_1):
+                    sample_1 = sample_1.replace (proficiency_level[loop_cnt].
+                                   lower(), "")
+                    temp_dict["flagProficiency"] = "yes"
+                    temp_dict["userProficiency_search"] = \
+                        proficiency_level[loop_cnt].lower()
+                    pl_found_flag = 1
+                    break
+            sample_2 = copy.copy(sample_1) 
+            if (0 == pl_found_flag):
+                temp_dict["flagProficiency"] = "no"
+
+            scm, pcm = check_for_category(sample_1.strip(), 
+                           seco_category, prim_category)
+            if (0 != scm):
+                temp_dict["secondaryCategory"] = scm
+            if (0 != pcm):
+                temp_dict["primaryCategory"] = pcm
+
+            if ((0 == scm) and (0 == pcm)):
+                sample_1_tokens = sample_1.split()
+                #print (sample_1_tokens)
+                sample_1_tokens_length = len(sample_1_tokens)
+
+                for j in range (0, len(seco_category)):
+                    temp_item = seco_category[j].lower()
+                    temp_item_tokens = temp_item.split()
+                    first_seco_match = 0
+                    for lc_2 in range (0, len(sample_1_tokens)):
+                        if (sample_1_tokens[lc_2] == temp_item_tokens[0]):
+                            first_seco_match = 1
+                            break
+                    if ((1 == first_seco_match) and (temp_item in sample_1)):
+                        temp_dict["secondaryCategoryFlag"] = "yes"
+                        temp_dict["secondaryCategory"] = temp_item
+                        break
+
+                for k in range (0, len(prim_category)):
+                    temp_item = prim_category[k].lower()
+                    temp_item_tokens = temp_item.split()
+                    first_prim_match = 0
+                    for lc_3 in range (0, len(sample_1_tokens)):
+                        if (sample_1_tokens[lc_3] == temp_item_tokens[0]):
+                            first_prim_match = 1
+                            break
+                    if ((1 == first_prim_match) and (temp_item in sample_1)):
+                        temp_dict["primaryCategoryFlag"] = "yes"
+                        temp_dict["primaryCategory"] = temp_item
+                        break
+                   
+            if (("yes" == temp_dict["secondaryCategoryFlag"]) or 
+                ("yes" == temp_dict["primaryCategoryFlag"])):
+                np_extractor_object = Noun_Phrase_Extraction_Arpan(sample_2)
+            else:
+                np_extractor_object = Noun_Phrase_Extraction_Arpan(sample_1)
+            np_result = np_extractor_object.extract()
+            print ("Debug print: np_result = ", np_result)
+            if (0 == len(np_result)):
+                np_result_2 = np_extractor_object.extract_2() 
+                #print (np_result_2)
+                np_result_3 = [item for item in np_result_2 if \
+                               item not in vowel_list]
+                #print ("np_result_3: ", np_result_3) 
+                temp_str = " ".join(np_result_3)
+                temp_dict["phrase"] = temp_str
+            else:
+                np_result_2 = [item for item in np_result if \
+                               item not in vowel_list]
+                #print ("np_result_2: ", np_result_2) 
+                temp_str = " ".join(np_result_2)
+                temp_dict["phrase"] = temp_str
+            temp_dict["learningObjectFlag"] = "no"
+            temp_dict["activityLabelFlag"] = "no"
+        #print (temp_dict)
+        ##----------------------------------------------------------------##
+       
+        ## Checking the nlp extracted phrase with skill name
+        que_1 = queue.Queue()
+        t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                 check_exact_skill_match(a1, b1)),
+                 args=(que_1, temp_dict["phrase"], all_items))
+        que_2 = queue.Queue()
+        t2 = Thread(target=lambda q2, a2, b2, c2: q2.put(
+                check_for_category(a2, b2, c2)),
+                args=(que_2, temp_dict["phrase"], seco_category, prim_category))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        scm, pcm = que_2.get()
+        if (0 != scm):
+            temp_dict["secondaryCategoryFlag"] = "yes"
+            temp_dict["secondaryCategory"] = scm
+        if (0 != pcm):
+            temp_dict["primaryCategoryFlag"] = "yes"
+            temp_dict["primaryCategory"] = pcm
+
+        skill_match, associated_tags = que_1.get()
+        #print ("associated_tags: ", associated_tags)
+        if (1 == skill_match): 
+            temp_dict["activityNameMatchFlag"] = "no"
+            temp_dict["activityCodeMatchFlag"] = "no"
+            temp_dict["skillNameMatchFlag"] = "yes"
+            temp_dict["skillName"] = temp_dict["phrase"]
+            temp_dict["skillCodeMatchFlag"] = "no" 
+            temp_dict["userSearchTags"] = associated_tags.split(" ")
+            #print (temp_dict)
+            return (temp_dict)
+       
+        ## checking for the nlp phrase for title code and skill code
+        else:
+            #phrase_tokens = word_tokenize(temp_dict["phrase"])
+            phrase_tokens = temp_dict["phrase"].split(" ")
+            title_code_match = 0
+            skill_code_match = 0
+            que_1 = queue.Queue()
+            t1 = Thread(target=lambda q1, a1, b1: q1.put(
+                 check_title_code(a1, b1)),
+                 args=(que_1, phrase_tokens, all_items)) 
+            que_2 = queue.Queue()
+            t2 = Thread(target=lambda q2, a2, b2: q2.put(
+                 check_skill_code(a2, b2)),
+                 args=(que_2, phrase_tokens, all_items))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+    
+            title_code_match, title_code, associated_tags = que_1.get()
+            if (1 == title_code_match):
+                temp_dict["activityNameMatchFlag"] = "no"
+                temp_dict["activityCodeMatchFlag"] = "yes"
+                temp_dict["activityCode"] = title_code
+                temp_dict["skillNameMatchFlag"] = "no"   
+                temp_dict["skillCodeMatchFlag"] = "no"
+                temp_dict["userSearchTags"] = associated_tags
+                #print (temp_dict)
+                return (temp_dict)
+            
+            skill_code_match, skill_code, associated_tags = que_2.get()
+            if (1 == skill_code_match):
+                temp_dict["activityNameMatchFlag"] = "no"
+                temp_dict["activityCodeMatchFlag"] = "no"
+                temp_dict["skillNameMatchFlag"] = "no"   
+                temp_dict["skillCodeMatchFlag"] = "yes"
+                temp_dict["skillCode"] = skill_code
+                temp_dict["userSearchTags"] = associated_tags
+                #print (temp_dict)
+                return (temp_dict)
+          
+            ## handling of C# present in the input string
+            if ("c#" == temp_dict["phrase"]):
+                tags_str = temp_dict["phrase"]
+                temp_dict["userSearchTags"] = temp_dict["phrase"]
+            else:
+                que_3 = queue.Queue()
+                t3 = Thread(target=lambda q3, a3, b3: q3.put(
+                         handle_nlp_extracted_phrase(a3, b3)), 
+                         args=(que_3, temp_dict["phrase"], tags_2))
+                que_4 = queue.Queue()
+                t4 = Thread(target=lambda q4, a4, b4: q4.put(
+                         did_you_mean_Arpan(a4, b4)), 
+                         args=(que_4, temp_dict["phrase"], tags_2))
+
+                t3.start()
+                t4.start()
+                t3.join()
+                t4.join()
+
+                associated_tags = que_3.get()
+                if (0 != len(associated_tags)):
+                    temp_dict["userSearchTags"] = associated_tags
+
+                dym_val = que_4.get()
+                if (None != dym_val):
+                    dym_val_1 = dym_val.split()
+                    #print (dym_val_1) 
+                    dym_val_2 = list(map(lambda x:x.lower(), dym_val_1))
+                    #print (dym_val_2)
+                    if (len(dym_val_2) == len(set(dym_val_2))):
+                        temp_dict["didYouMean"] = string.capwords(dym_val)
+                else:
+                    temp_dict["didYouMean"] = "no"
+                print (temp_dict["userSearchTags"])
+                if (1 < len(temp_dict["userSearchTags"])):
+                    tags_str = " ".join(temp_dict["userSearchTags"])
+                else:
+                    tags_str = "".join(temp_dict["userSearchTags"])
+            print ("tags_str ABC-Chk: [%s]" %tags_str)
+            skill_match, skill_name_tags = check_exact_skill_match(tags_str, 
+                                               all_items)
+            if (1 == skill_match):
+                temp_dict["skillNameMatchFlag"] = "yes"
+                temp_dict["skillName"] = tags_str
+            else:
+                skill_match, skill_name_tags = check_for_skill_match(tags_str,
+                                                   all_items)
+                if (1 == skill_match):
+                    temp_dict["skillNameMatchFlag"] = "yes"
+                    temp_dict["skillName"] = skill_name_tags
+          
+        #print (temp_dict)
+        return (temp_dict)
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def read_config(config_data):
+    ##---- Tag Handling ------------------------------------------------##
+    skill_title_file = config_data["skill_title_file"]
+
+    try:
+        with open(skill_title_file) as title_skill_json_file: 
+            all_items = json.load(title_skill_json_file)
+    except ValueError as error:
+        print ("Error type:", type(error))
+        print ("json.loads() ValueError for JSON object:", error)
+
+    tags = list(map(itemgetter("tag"), all_items)) 
+    #print (len(tags))
+
+    list_of_tags = ', '.join(tags).split(', ')
+    unique_tags = set(list_of_tags)
+    tags_2 = list(unique_tags)
+    #print (tags_2)
+
+    tag_stopwords_file = config_data["tag_stopwords_file"]
+    #with open(tag_stopwords_file, 'r') as fd_tag_stopwords:
+    tag_stopwords = open(tag_stopwords_file,'r').read().split('\n')
+    tag_stopwords_2 = [x.lower() for x in tag_stopwords]
+    #print (tag_stopwords_2)
+    #print (len(tag_stopwords_2))
+
+    ##---- Category handling ------------------------------------------##
+    primary_category_file = config_data["primary_category_file"]
+    prim_category = json.loads(open(primary_category_file, 'r').read().
+                        splitlines()[0])
+    #print(prim_category)
+    #print (len(prim_category))
+
+    secondary_category_file = config_data["secondary_category_file"]
+    seco_category = json.loads(open(secondary_category_file, 'r').read().
+                        splitlines()[0])
+    #print(seco_category)
+    #print (len(seco_category))
+    ##-----------------------------------------------------------------##
+
+    ##---- Delivery Mode ----------------------------------------------##
+    delivery_file = config_data["delivery_file"]
+    delivery_mode = json.loads(open(delivery_file, 'r').read().splitlines()[0])
+    #print (delivery_mode)
+    #print (len(delivery_mode))
+    ##-----------------------------------------------------------------##
+
+    ##---- Market Place -----------------------------------------------##
+    market_place_file = config_data["market_place_file"]
+    market_place = json.loads(open(market_place_file, 'r').read().
+                       splitlines()[0])
+    #print (market_place)
+    #print (len(market_place))
+    ##-----------------------------------------------------------------##
+
+    return all_items, tags, tags_2, tag_stopwords_2, prim_category, \
+        seco_category, delivery_mode, market_place
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+def prepare_NLU_Result(ui_output):
+    start = time.time()
+    print ("\nConsidered Input: \n", ui_output)
+
+
+    #1
+    article_keywords = ["Article", ]  
+    article_activity_label = ["Article"]
+
+    #2
+    books_and_journal_keywords = ["Books and Journal", "Books-and-Journal", 
+        "Books_and_Journal"]
+    books_and_journal_activity_label = ["Book", "Self Reading"]
+
+    #3
+    podcast_keywords = ["Podcast", ]
+    podcast_activity_label = ["Podcast"]
+
+    #4
+    training_keywords = ["Training", ]
+    training_activity_label = ["Online Course", "SkillSoft Course", "Curriculum", 
+        "External Training", "Self-Paced"]
+
+    #5
+    hands_on_practice_keywords = ["Hands_on_Practice", "Hands-on-Practice", 
+        "Hands-on Practice", "Hands on Practice", "HandsOnPractice"]
+    hands_on_practice_activity_label = ["Lab Class", "Lab", "Self-Paced", 
+        "SkillSoft Course"]
+
+    #6
+    assessment_keywords = ["Assessment"]
+    assessment_activity_label = ["Online Assessment", "Quick Assessment", 
+        "Scheduled Assessment", "Assessment", "Evaluation", 
+        "Professional Certification", ] 
+
+    #7
+    resource_keywords = ["Resource"]
+    resource_activity_label = ["Document", "Article"]
+
+    #8
+    video_keywords = ["Video", ]
+    video_activity_label = ["Video", ] 
+
+    #9
+    event_keywords = ["Event", ]
+    event_activity_label = ["Instructor Led Training", "ILT Class",
+        "Conference", "Connect", "Seminar", "Event"]
+
+    #10
+    pathway_keywords = ["Pathway"]
+    pathway_activity_label = ["Pathway"]
+
+    #11
+    quiz_keywords = ["Quiz"]
+    quiz_activity_label = ["Assessment", "Quiz"]
+
+    all_activity_labels = article_activity_label + \
+        books_and_journal_activity_label + podcast_activity_label + \
+        training_activity_label + hands_on_practice_activity_label + \
+        assessment_activity_label + resource_activity_label + \
+        video_activity_label + event_activity_label + pathway_activity_label + \
+        quiz_activity_label
+    #print (all_activity_labels) 
+    all_activity_labels_no_dup = []
+    for item in all_activity_labels:
+        if item not in all_activity_labels_no_dup:
+            all_activity_labels_no_dup.append(item)
+    #print (all_activity_labels_no_dup)
+
+    all_keywords = event_keywords + article_keywords + \
+        books_and_journal_keywords + podcast_keywords + training_keywords + \
+        hands_on_practice_keywords + assessment_keywords + resource_keywords + \
+        video_keywords + pathway_keywords + quiz_keywords
+    #print (all_keywords)
+
+    with open("support_config.json") as fd_support_config:
+        config_data = json.load(fd_support_config)
+
+    all_items, tags, tags_2, tag_stopwords_2, prim_category, seco_category, \
+    delivery_mode, market_place = read_config(config_data)
+
+    tags_2_len = len(tags_2)
+    #print ("tags_2_len: ", tags_2_len)
+
+    vowel_list = ["a", "e", "i", "o", "u"]      
+
+    proficiency_level = [
+        "Beginner", "Basic", "Learner", "Level1", "Level 1", "PL1", "PL 1",
+        "Intermediate", "Practitioner", "Level2", "Level 2", "PL2", "PL 2",
+        "Advanced", "Specialist", "Level3", "Level 3", "PL3", "PL 3",
+        "Expert", "Level4", "Level 4", "PL4", "PL 4"]
+    ##-----------------------------------------------------------------##
+
+    ##-- Starter Program ----------------------------------------------##
+    query_processed_output = process_ui_output(
+            ui_output, 
+            all_activity_labels_no_dup, 
+            all_keywords, 
+            all_items, 
+            tags,
+            tags_2, 
+            prim_category, 
+            seco_category, 
+            delivery_mode, 
+            market_place,
+            vowel_list, 
+            proficiency_level)
+    ##-----------------------------------------------------------------##
+
+    ##-----------------------------------------------------------------##
+    if ("phrase" in query_processed_output):
+        query_processed_output.pop("phrase")
+    if ("deliveryModeFlag" not in query_processed_output):
+        query_processed_output["deliveryModeFlag"] = "no"
+    if ("marketPlaceFlag" not in query_processed_output):
+        query_processed_output["marketPlaceFlag"] = "no"
+    if (("activityLabel" in query_processed_output) and \
+        (0 == len(query_processed_output["activityLabel"]))):
+        query_processed_output.pop("activityLabel")
+    if (("learningObject" in query_processed_output) and \
+        (0 == len(query_processed_output["learningObject"]))):
+        query_processed_output.pop("learningObject")
+
+    temp = query_processed_output["userSearchTags"]
+    if ("no" == temp):
+        temp = ui_output["query_string"].lower().split()
+    print ("query_processed tags: ", temp)
+    print (type(temp))
+
+    if (isinstance (temp, list)):
+        processed_tags_list = []
+        for i in range (0, len(temp)):
+            temp_2 = ''.join(temp[i]).split(', ')
+            processed_tags_list.append(temp_2)
+        #print (processed_tags_list)
+        #print (len(processed_tags_list))
+        processed_tags_list = list(chain.from_iterable(processed_tags_list)) 
+        #print (processed_tags_list)
+        #print (len(processed_tags_list))
+        processed_tags_list_2 = []
+        for i in range (0, len(processed_tags_list)):
+            if ((0 != len(processed_tags_list[i])) and 
+                (processed_tags_list[i] not in processed_tags_list_2)):
+                processed_tags_list_2.append(processed_tags_list[i])
+        #print (processed_tags_list_2)
+        #print (len(processed_tags_list_2))
+        processed_tags_list_3 = list(set(processed_tags_list_2) & 
+                                     set(tag_stopwords_2))
+        query_processed_output["userSearchTags"] = \
+            list(set(processed_tags_list_2) - set(processed_tags_list_3))
+        #print ("query_processed_output['tags']: ", 
+        #    query_processed_output["userSearchTags"])
+        if (1 == len(query_processed_output["userSearchTags"])):
+            query_processed_output["userSearchTags"] = \
+                "".join(query_processed_output["userSearchTags"])
+        else:
+            query_processed_output["userSearchTags"] = \
+                ", ".join(query_processed_output["userSearchTags"])
+
+    query_processed_output["segment"] = ui_output["segment"]
+    if (("secondaryCategory" in query_processed_output) or
+        ("primaryCategory" in query_processed_output)):
+        if (("no" == query_processed_output["userSearchTags"]) and
+            (0 != len(query_processed_output["didYouMean"]))):
+           query_processed_output["userSearchTags"] = \
+               query_processed_output["didYouMean"]
+           query_processed_output["didYouMean"] = "no" 
+
+    #print (query_processed_output["skillName"])
+    if (("skillName" in query_processed_output) and 
+        (isinstance (query_processed_output["skillName"], list))):
+        query_processed_output["skillName"] = \
+            "".join(query_processed_output["skillName"])
+
+    ## did_you_mean
+    if (query_processed_output["didYouMean"] == "no"):
+        query_processed_output["didYouMeanFlag"] = "no"
+        query_processed_output["didYouMean"] = ""
+    else:
+        query_processed_output["didYouMeanFlag"] = "yes"
+    ## skill_name
+    if (query_processed_output["skillNameMatchFlag"] == "no"):
+        query_processed_output["skillName"] = ""
+    ## skill_code
+    if (query_processed_output["skillCodeMatchFlag"] == "no"):
+        query_processed_output["skillCode"] = ""
+    ## Proficiency Level
+    if (query_processed_output["flagProficiency"] == "no"):
+        query_processed_output["userProficiency_search"] = ""
+    else:
+        if ((query_processed_output["userProficiency_search"] == "beginner") or
+            (query_processed_output["userProficiency_search"] == "basic") or
+            (query_processed_output["userProficiency_search"] == "learner") or
+            (query_processed_output["userProficiency_search"] == "level1") or
+            (query_processed_output["userProficiency_search"] == "level 1") or
+            (query_processed_output["userProficiency_search"] == "pl1") or
+            (query_processed_output["userProficiency_search"] == "pl 1")):
+            query_processed_output["userProficiency_search"] = 1
+        if ((query_processed_output["userProficiency_search"] == "intermediate") or
+            (query_processed_output["userProficiency_search"] == "practitioner") or
+            (query_processed_output["userProficiency_search"] == "level2") or
+            (query_processed_output["userProficiency_search"] == "level 2") or
+            (query_processed_output["userProficiency_search"] == "pl2") or
+            (query_processed_output["userProficiency_search"] == "pl 2")):
+            query_processed_output["userProficiency_search"] = 2
+        if ((query_processed_output["userProficiency_search"] == "advanced") or
+            (query_processed_output["userProficiency_search"] == "specialist") or
+            (query_processed_output["userProficiency_search"] == "level3") or
+            (query_processed_output["userProficiency_search"] == "level 3") or
+            (query_processed_output["userProficiency_search"] == "pl3") or
+            (query_processed_output["userProficiency_search"] == "pl 3")):
+            query_processed_output["userProficiency_search"] = 3
+        if ((query_processed_output["userProficiency_search"] == "expert") or
+            (query_processed_output["userProficiency_search"] == "level4") or
+            (query_processed_output["userProficiency_search"] == "level 4") or
+            (query_processed_output["userProficiency_search"] == "pl4") or
+            (query_processed_output["userProficiency_search"] == "pl 4")):
+            query_processed_output["userProficiency_search"] == 4
+    ## Activity Code
+    if (query_processed_output["activityCodeMatchFlag"] == "no"):
+        query_processed_output["activityCode"] = ""
+    ## Activity Name
+    if (query_processed_output["activityNameMatchFlag"] == "no"):
+        query_processed_output["activityName"] = ""
+    ## Learning Object
+    if (query_processed_output["learningObjectFlag"] == "no"):
+        query_processed_output["learningObject"] = ""
+    ## Activity Label
+    if (query_processed_output["activityLabelFlag"] == "no"):
+        query_processed_output["activityLabel"] = ""
+    ## Market Place
+    if (query_processed_output["marketPlaceFlag"] == "no"):
+        query_processed_output["marketPlace"] = ""
+    ## Delivery Mode
+    if (query_processed_output["deliveryModeFlag"] == "no"):
+        query_processed_output["deliveryMode"] = ""
+    ## Primary Category
+    if (query_processed_output["primaryCategoryFlag"] == "no"):
+        query_processed_output["primaryCategory"] = ""
+    ## Secondary Category
+    if (query_processed_output["secondaryCategoryFlag"] == "no"):
+        query_processed_output["secondaryCategory"] = ""
+    query_processed_output["userID"] = ui_output["user_id"]
+
+    query_processed_output["userSearchTags"] = \
+        query_processed_output["userSearchTags"].replace("/", ", ")
+    query_processed_output = dict(sorted(query_processed_output.items()))
+    #print ("query_processed_output: ", query_processed_output)
+
+    end = time.time()
+    elapsed_time = (end - start)
+    return query_processed_output, elapsed_time
+#------------------------------------------------------------------------------#
+
