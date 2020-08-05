@@ -13,22 +13,22 @@ test = 0
 
 NEWLINE = "\n"
 
-GSD = "gsd"
-ASP = "aspire"
-NSS = "nss"
-BUS = "business"
-UNK = "unknown"
+ABC = "type-1"
+DEF = "type-2"
+GHI = "type-3"
+JKL = "type-4"
+XYZ = "type-5"
 #------------------------------------------------------------------------------#
 
 #------------------------------------------------------------------------------#
 SOURCES = [
-    ('data/set_1',    GSD),
-    ('data/set_2',    BUS),
-    ('data/set_3a',   ASP),
-    ('data/set_3b',   ASP),
-    ('data/set_3c',   ASP),
-    ('data/set_4',    NSS),
-    ('data/set_5',    UNK),
+    ('data/set_1',    ABC),
+    ('data/set_2',    DEF),
+    ('data/set_3a',   GHI),
+    ('data/set_3b',   GHI),
+    ('data/set_3c',   GHI),
+    ('data/set_4',    JKL),
+    ('data/set_5',    XYZ),
 ]
 
 TST = "test"
