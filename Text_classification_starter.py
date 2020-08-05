@@ -14,10 +14,10 @@ test = 0
 
 NEWLINE = "\n"
 
-GSD = "gsd"
-ASP = "aspire"
-NSS = "nss"
-BUS = "business"
+ABC = "type-1"
+DEF = "type-2"
+GHI = "type-3"
+JKL = "type-4"
 UNK = "unknown"
 #------------------------------------------------------------------------------#
 
@@ -28,7 +28,7 @@ SOURCES = [
     ('data/set_3a',   GHI),
     ('data/set_3b',   GHI),
     ('data/set_3c',   GHI),
-    ('data/set_4',    QWER,
+    ('data/set_4',    JKL,
     ('data/set_5',    UNK),
 ]
 
